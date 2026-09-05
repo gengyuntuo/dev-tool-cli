@@ -37,6 +37,8 @@ type model struct {
 	emrLoading         bool
 	emrErr             string
 	emrPage            int
+	emrSelected        int
+	emrDetail          emrDetailState
 	remoteDialog       remoteShareDialog
 	remoteShareLoading bool
 	remoteShare        *tunnel.RemoteForward
@@ -58,6 +60,13 @@ type remoteShareDialog struct {
 	err      string
 }
 
+type emrDetailState struct {
+	visible bool
+	loading bool
+	err     string
+	detail  appemr.ClusterDetail
+}
+
 type remoteShareRecord struct {
 	ID        int
 	Action    string
@@ -75,6 +84,11 @@ type remoteShareRecord struct {
 type emrClustersLoadedMsg struct {
 	clusters []appemr.Cluster
 	err      error
+}
+
+type emrClusterDetailLoadedMsg struct {
+	detail appemr.ClusterDetail
+	err    error
 }
 
 type sshKeysLoadedMsg struct {
@@ -100,6 +114,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.remoteDialog.visible {
 			return m.updateRemoteDialog(msg)
 		}
+		if m.emrDetail.visible {
+			switch msg.String() {
+			case "ctrl+c", "ctrl+d", "q":
+				return m, tea.Quit
+			case "enter", "esc":
+				m.emrDetail.visible = false
+				return m, nil
+			}
+		}
 
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
@@ -117,10 +140,29 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "p":
 			if m.activeMenu == emrMenuIndex && m.emrPage > 0 {
 				m.emrPage--
+				m.emrSelected = m.emrPage * m.emrPageSize()
 			}
 		case "n":
 			if m.activeMenu == emrMenuIndex && m.emrPage < m.emrMaxPage() {
 				m.emrPage++
+				m.emrSelected = m.emrPage * m.emrPageSize()
+			}
+		case "up":
+			if m.activeMenu == emrMenuIndex && m.emrSelected > 0 {
+				m.emrSelected--
+				m.emrPage = m.emrSelected / m.emrPageSize()
+			}
+		case "down":
+			if m.activeMenu == emrMenuIndex && m.emrSelected < len(m.emrClusters)-1 {
+				m.emrSelected++
+				m.emrPage = m.emrSelected / m.emrPageSize()
+			}
+		case "enter":
+			if m.activeMenu == emrMenuIndex && len(m.emrClusters) > 0 {
+				cluster := m.emrClusters[m.emrSelected]
+				m.emrDetail = emrDetailState{visible: true, loading: true}
+				m.status = "Loading EMR cluster detail..."
+				return m, loadEMRClusterDetail(cluster.ID)
 			}
 		case "tab":
 			m.activeMenu = (m.activeMenu + 1) % len(menus)
@@ -145,6 +187,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.emrDetail.visible {
+				m.emrDetail.visible = false
+				return m, nil
+			}
 			if m.remoteDialog.visible {
 				return m.updateRemoteDialogMouse(msg)
 			}
@@ -169,8 +215,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m.emrClusters = msg.clusters
 		m.emrPage = 0
+		m.emrSelected = 0
 		m.emrErr = ""
 		m.status = fmt.Sprintf("Loaded %d running EMR clusters", len(msg.clusters))
+	case emrClusterDetailLoadedMsg:
+		m.emrDetail.loading = false
+		if msg.err != nil {
+			m.emrDetail.err = msg.err.Error()
+			m.status = "Failed to load EMR cluster detail"
+			break
+		}
+
+		m.emrDetail.detail = msg.detail
+		m.emrDetail.err = ""
+		m.status = "Loaded EMR cluster detail"
 	case sshKeysLoadedMsg:
 		if msg.err != nil {
 			m.remoteDialog.err = msg.err.Error()
@@ -222,6 +280,9 @@ func (m model) View() string {
 
 	if m.remoteDialog.visible {
 		return m.renderRemoteDialog(view)
+	}
+	if m.emrDetail.visible {
+		return m.renderEMRDetail(view)
 	}
 
 	return view
@@ -276,7 +337,7 @@ func (m model) renderStatusBar() string {
 	text := " r 刷新  q 退出"
 	switch m.activeMenu {
 	case emrMenuIndex:
-		text = " r 刷新  p 前一页  n 下一页  q 退出"
+		text = " r 刷新  ↑/↓ 选择  p 前一页  n 下一页  Enter 详情  q 退出"
 	case remoteMenuIndex:
 		text = " s 分享  c 连接  q 退出"
 	}
@@ -326,13 +387,19 @@ func (m model) renderEMRDisplay(height int) string {
 	lines := []string{
 		fmt.Sprintf("Running EMR Clusters  Page %d/%d  Total %d", m.emrPage+1, totalPages, len(m.emrClusters)),
 		"",
-		formatClusterRow("ID", "Name", "State", "Created At"),
-		strings.Repeat("-", min(m.width, 96)),
+		boxTop(tableWidth(m.width)),
+		boxRow(formatClusterRow("ID", "Name", "State", "Primary node private DNS", "Created At"), tableWidth(m.width)),
+		boxSeparator(tableWidth(m.width)),
 	}
 
-	for _, cluster := range m.emrClusters[start:end] {
-		lines = append(lines, formatClusterRow(cluster.ID, cluster.Name, cluster.State, cluster.CreatedAt))
+	for i, cluster := range m.emrClusters[start:end] {
+		row := boxRow(formatClusterRow(cluster.ID, cluster.Name, renderEMRState(cluster.State), cluster.PrimaryNodePrivateDNS, cluster.CreatedAt), tableWidth(m.width))
+		if start+i == m.emrSelected {
+			row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
+		}
+		lines = append(lines, row)
 	}
+	lines = append(lines, boxBottom(tableWidth(m.width)))
 
 	content := lipgloss.NewStyle().
 		Padding(1, 2).
@@ -343,7 +410,7 @@ func (m model) renderEMRDisplay(height int) string {
 
 func (m model) emrPageSize() int {
 	displayHeight := max(m.height-1-statusBarHeight, 0)
-	return max(displayHeight-5, 1)
+	return max(displayHeight-7, 1)
 }
 
 func (m model) emrMaxPage() int {
@@ -354,8 +421,26 @@ func (m model) emrMaxPage() int {
 	return (len(m.emrClusters) - 1) / m.emrPageSize()
 }
 
-func formatClusterRow(id, name, state, createdAt string) string {
-	return fmt.Sprintf("%-22s  %-30s  %-14s  %-19s", truncate(id, 22), truncate(name, 30), truncate(state, 14), truncate(createdAt, 19))
+func formatClusterRow(id, name, state, primaryNodePrivateDNS, createdAt string) string {
+	return fmt.Sprintf(
+		"%-22s  %-26s  %-24s  %-42s  %-19s",
+		truncate(id, 22),
+		truncate(name, 26),
+		truncate(state, 24),
+		truncate(primaryNodePrivateDNS, 42),
+		truncate(createdAt, 19),
+	)
+}
+
+func renderEMRState(state string) string {
+	switch state {
+	case "WAITING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● WAITING")
+	case "RUNNING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● RUNNING")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● " + state)
+	}
 }
 
 func truncate(value string, width int) string {
@@ -379,6 +464,123 @@ func loadEMRClusters() tea.Cmd {
 		clusters, err := appemr.ListRunningClusters(ctx, "")
 		return emrClustersLoadedMsg{clusters: clusters, err: err}
 	}
+}
+
+func loadEMRClusterDetail(clusterID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		detail, err := appemr.GetClusterDetail(ctx, "", clusterID)
+		return emrClusterDetailLoadedMsg{detail: detail, err: err}
+	}
+}
+
+func (m model) renderEMRDetail(base string) string {
+	_ = base
+
+	width := min(max(m.width-8, 70), 132)
+	height := min(max(m.height-4, 18), m.height)
+
+	var content string
+	switch {
+	case m.emrDetail.loading:
+		content = "Loading EMR cluster detail..."
+	case m.emrDetail.err != "":
+		content = "EMR cluster detail failed\n\n" + m.emrDetail.err + "\n\nPress Enter to close."
+	default:
+		content = m.renderEMRDetailContent(width)
+	}
+
+	dialog := lipgloss.NewStyle().
+		Width(width).
+		Height(height).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Render(content)
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func (m model) renderEMRDetailContent(width int) string {
+	detail := m.emrDetail.detail
+	tableWidth := max(width-6, 40)
+
+	lines := []string{
+		"EMR Cluster Detail",
+		"",
+		"基本信息",
+		boxTop(tableWidth),
+		boxRow("ID: "+detail.ID, tableWidth),
+		boxRow("Name: "+detail.Name, tableWidth),
+		boxRow("State: "+detail.State, tableWidth),
+		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
+		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
+		boxRow("Created At: "+detail.CreatedAt, tableWidth),
+		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
+		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
+		boxRow("Log URI: "+detail.LogURI, tableWidth),
+		boxBottom(tableWidth),
+		"",
+		"最近 10 个 Step",
+		boxTop(tableWidth),
+		boxRow(formatStepRow("ID", "Name", "State", "Created At", "Started At", "Ended At"), tableWidth),
+		boxSeparator(tableWidth),
+	}
+
+	if len(detail.Steps) == 0 {
+		lines = append(lines, boxRow("No steps found.", tableWidth))
+	} else {
+		for _, step := range detail.Steps {
+			lines = append(lines, boxRow(formatStepRow(step.ID, step.Name, step.State, step.CreatedAt, step.StartedAt, step.EndedAt), tableWidth))
+		}
+	}
+
+	lines = append(lines, boxBottom(tableWidth), "", "Press Enter to close.")
+	return strings.Join(lines, "\n")
+}
+
+func formatStepRow(id, name, state, createdAt, startedAt, endedAt string) string {
+	return fmt.Sprintf(
+		"%-18s  %-24s  %-12s  %-19s  %-19s  %-19s",
+		truncate(id, 18),
+		truncate(name, 24),
+		truncate(state, 12),
+		truncate(createdAt, 19),
+		truncate(startedAt, 19),
+		truncate(endedAt, 19),
+	)
+}
+
+func tableWidth(screenWidth int) int {
+	return max(min(screenWidth-4, 128), 40)
+}
+
+func boxTop(width int) string {
+	return "┌" + strings.Repeat("─", max(width-2, 0)) + "┐"
+}
+
+func boxSeparator(width int) string {
+	return "├" + strings.Repeat("─", max(width-2, 0)) + "┤"
+}
+
+func boxBottom(width int) string {
+	return "└" + strings.Repeat("─", max(width-2, 0)) + "┘"
+}
+
+func boxRow(content string, width int) string {
+	innerWidth := max(width-2, 0)
+	return "│" + padRight(truncate(content, innerWidth), innerWidth) + "│"
+}
+
+func padRight(value string, width int) string {
+	length := len([]rune(value))
+	if length >= width {
+		return value
+	}
+
+	return value + strings.Repeat(" ", width-length)
 }
 
 func (m model) renderRemoteDisplay(height int) string {
