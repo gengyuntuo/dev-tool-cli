@@ -3,6 +3,7 @@ package emr
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -25,7 +26,15 @@ type ClusterDetail struct {
 	LogURI          string
 	ServiceRole     string
 	StepConcurrency string
+	Applications    []string
+	Instances       []InstanceSummary
 	Steps           []Step
+}
+
+type InstanceSummary struct {
+	Kind  string
+	Type  string
+	Count string
 }
 
 type Step struct {
@@ -74,16 +83,12 @@ func ListRunningClusters(ctx context.Context, region string) ([]Cluster, error) 
 		}
 
 		for _, cluster := range page.Clusters {
-			item := Cluster{
+			clusters = append(clusters, Cluster{
 				ID:        stringValue(cluster.Id),
 				Name:      stringValue(cluster.Name),
 				State:     clusterState(cluster.Status),
 				CreatedAt: clusterCreatedAt(cluster.Status),
-			}
-			if item.ID != "-" {
-				item.PrimaryNodePrivateDNS = lookupPrimaryNodePrivateDNS(ctx, client, item.ID)
-			}
-			clusters = append(clusters, item)
+			})
 		}
 	}
 
@@ -120,9 +125,16 @@ func GetClusterDetail(ctx context.Context, region string, clusterID string) (Clu
 		LogURI:          stringValue(cluster.LogUri),
 		ServiceRole:     stringValue(cluster.ServiceRole),
 		StepConcurrency: int32Value(cluster.StepConcurrencyLevel),
+		Applications:    applications(cluster.Applications),
 	}
 
-	steps, err := listRecentSteps(ctx, client, clusterID, 10)
+	instances, err := listInstanceSummaries(ctx, client, clusterID)
+	if err != nil {
+		return ClusterDetail{}, err
+	}
+	detail.Instances = instances
+
+	steps, err := listSteps(ctx, client, clusterID)
 	if err != nil {
 		return ClusterDetail{}, err
 	}
@@ -190,13 +202,13 @@ func lookupPrimaryNodePrivateDNSByInstanceFleet(ctx context.Context, client *aws
 	return "-"
 }
 
-func listRecentSteps(ctx context.Context, client *awsemr.Client, clusterID string, limit int) ([]Step, error) {
+func listSteps(ctx context.Context, client *awsemr.Client, clusterID string) ([]Step, error) {
 	paginator := awsemr.NewListStepsPaginator(client, &awsemr.ListStepsInput{
 		ClusterId: aws.String(clusterID),
 	})
 
-	steps := make([]Step, 0, limit)
-	for paginator.HasMorePages() && len(steps) < limit {
+	var steps []Step
+	for paginator.HasMorePages() {
 		page, err := paginator.NextPage(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("list emr cluster %s steps: %w", clusterID, err)
@@ -211,13 +223,104 @@ func listRecentSteps(ctx context.Context, client *awsemr.Client, clusterID strin
 				StartedAt: stepTime(step.Status, "started"),
 				EndedAt:   stepTime(step.Status, "ended"),
 			})
-			if len(steps) == limit {
-				break
-			}
 		}
 	}
 
 	return steps, nil
+}
+
+func listInstanceSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {
+	groups, groupErr := listInstanceGroupSummaries(ctx, client, clusterID)
+	if groupErr == nil && len(groups) > 0 {
+		return groups, nil
+	}
+
+	fleets, fleetErr := listInstanceFleetSummaries(ctx, client, clusterID)
+	if fleetErr != nil {
+		if groupErr != nil {
+			return nil, fmt.Errorf("%w; %w", groupErr, fleetErr)
+		}
+		return nil, fleetErr
+	}
+
+	return fleets, nil
+}
+
+func listInstanceGroupSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {
+	paginator := awsemr.NewListInstanceGroupsPaginator(client, &awsemr.ListInstanceGroupsInput{
+		ClusterId: aws.String(clusterID),
+	})
+
+	var summaries []InstanceSummary
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list emr cluster %s instance groups: %w", clusterID, err)
+		}
+
+		for _, group := range page.InstanceGroups {
+			summaries = append(summaries, InstanceSummary{
+				Kind:  string(group.InstanceGroupType),
+				Type:  stringValue(group.InstanceType),
+				Count: int32Value(group.RunningInstanceCount),
+			})
+		}
+	}
+
+	return summaries, nil
+}
+
+func listInstanceFleetSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {
+	paginator := awsemr.NewListInstanceFleetsPaginator(client, &awsemr.ListInstanceFleetsInput{
+		ClusterId: aws.String(clusterID),
+	})
+
+	var summaries []InstanceSummary
+	for paginator.HasMorePages() {
+		page, err := paginator.NextPage(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("list emr cluster %s instance fleets: %w", clusterID, err)
+		}
+
+		for _, fleet := range page.InstanceFleets {
+			summaries = append(summaries, InstanceSummary{
+				Kind:  string(fleet.InstanceFleetType),
+				Type:  instanceFleetTypes(fleet.InstanceTypeSpecifications),
+				Count: int32Sum(fleet.ProvisionedOnDemandCapacity, fleet.ProvisionedSpotCapacity),
+			})
+		}
+	}
+
+	return summaries, nil
+}
+
+func applications(values []types.Application) []string {
+	result := make([]string, 0, len(values))
+	for _, app := range values {
+		name := stringValue(app.Name)
+		version := stringValue(app.Version)
+		if version != "-" {
+			name += " " + version
+		}
+		result = append(result, name)
+	}
+	if len(result) == 0 {
+		return []string{"-"}
+	}
+
+	return result
+}
+
+func instanceFleetTypes(values []types.InstanceTypeSpecification) string {
+	result := make([]string, 0, len(values))
+	for _, spec := range values {
+		result = append(result, stringValue(spec.InstanceType))
+	}
+	if len(result) == 0 {
+		return "-"
+	}
+
+	return strings.Join(result, ",")
 }
 
 func clusterState(status *types.ClusterStatus) string {
@@ -280,4 +383,15 @@ func int32Value(value *int32) string {
 	}
 
 	return fmt.Sprintf("%d", *value)
+}
+
+func int32Sum(values ...*int32) string {
+	var total int32
+	for _, value := range values {
+		if value != nil {
+			total += *value
+		}
+	}
+
+	return fmt.Sprintf("%d", total)
 }

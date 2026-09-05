@@ -19,6 +19,7 @@ import (
 )
 
 const statusBarHeight = 1
+const emrDetailStepPageSize = 10
 const emrMenuIndex = 0
 const remoteMenuIndex = 1
 const remoteSharePort = "20022"
@@ -61,10 +62,12 @@ type remoteShareDialog struct {
 }
 
 type emrDetailState struct {
-	visible bool
-	loading bool
-	err     string
-	detail  appemr.ClusterDetail
+	visible      bool
+	loading      bool
+	err          string
+	detail       appemr.ClusterDetail
+	stepPage     int
+	stepSelected int
 }
 
 type remoteShareRecord struct {
@@ -120,6 +123,30 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "enter", "esc":
 				m.emrDetail.visible = false
+				return m, nil
+			case "p":
+				if m.emrDetail.stepPage > 0 {
+					m.emrDetail.stepPage--
+					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+				}
+				return m, nil
+			case "n":
+				if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
+					m.emrDetail.stepPage++
+					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+				}
+				return m, nil
+			case "up":
+				if m.emrDetail.stepSelected > 0 {
+					m.emrDetail.stepSelected--
+					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+				}
+				return m, nil
+			case "down":
+				if m.emrDetail.stepSelected < len(m.emrDetail.detail.Steps)-1 {
+					m.emrDetail.stepSelected++
+					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+				}
 				return m, nil
 			}
 		}
@@ -187,10 +214,6 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
-			if m.emrDetail.visible {
-				m.emrDetail.visible = false
-				return m, nil
-			}
 			if m.remoteDialog.visible {
 				return m.updateRemoteDialogMouse(msg)
 			}
@@ -227,8 +250,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.emrDetail.detail = msg.detail
+		m.emrDetail.stepPage = 0
+		m.emrDetail.stepSelected = 0
 		m.emrDetail.err = ""
 		m.status = "Loaded EMR cluster detail"
+		if hasRunningStep(msg.detail.Steps) {
+			return m, blinkRemoteStatus()
+		}
 	case sshKeysLoadedMsg:
 		if msg.err != nil {
 			m.remoteDialog.err = msg.err.Error()
@@ -257,7 +285,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Remote tunnel connected"
 	case blinkStatusMsg:
 		m.statusBlink = !m.statusBlink
-		if m.hasConnectingRemoteShare() {
+		if m.hasConnectingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.detail.Steps)) {
 			return m, blinkRemoteStatus()
 		}
 	}
@@ -272,6 +300,13 @@ func (m model) View() string {
 
 	displayHeight := max(m.height-1-statusBarHeight, 0)
 
+	if m.emrDetail.visible {
+		return strings.Join([]string{
+			m.renderEMRDetailPage(displayHeight),
+			m.renderStatusBar(),
+		}, "\n")
+	}
+
 	view := strings.Join([]string{
 		m.renderMenuBar(),
 		m.renderDisplay(displayHeight),
@@ -281,10 +316,6 @@ func (m model) View() string {
 	if m.remoteDialog.visible {
 		return m.renderRemoteDialog(view)
 	}
-	if m.emrDetail.visible {
-		return m.renderEMRDetail(view)
-	}
-
 	return view
 }
 
@@ -341,6 +372,9 @@ func (m model) renderStatusBar() string {
 	case remoteMenuIndex:
 		text = " s 分享  c 连接  q 退出"
 	}
+	if m.emrDetail.visible {
+		text = " ↑/↓ 选择 Step  p 前一页  n 下一页  Enter 返回  q 退出"
+	}
 
 	return lipgloss.NewStyle().
 		Width(m.width).
@@ -383,23 +417,24 @@ func (m model) renderEMRDisplay(height int) string {
 	totalPages := m.emrMaxPage() + 1
 	start := m.emrPage * pageSize
 	end := min(start+pageSize, len(m.emrClusters))
+	tableWidth := tableWidth(m.width)
 
 	lines := []string{
 		fmt.Sprintf("Running EMR Clusters  Page %d/%d  Total %d", m.emrPage+1, totalPages, len(m.emrClusters)),
 		"",
-		boxTop(tableWidth(m.width)),
-		boxRow(formatClusterRow("ID", "Name", "State", "Primary node private DNS", "Created At"), tableWidth(m.width)),
-		boxSeparator(tableWidth(m.width)),
+		boxTop(tableWidth),
+		boxRow(formatClusterRow(tableWidth, "ID", "Name", "State", "Created At"), tableWidth),
+		boxSeparator(tableWidth),
 	}
 
 	for i, cluster := range m.emrClusters[start:end] {
-		row := boxRow(formatClusterRow(cluster.ID, cluster.Name, renderEMRState(cluster.State), cluster.PrimaryNodePrivateDNS, cluster.CreatedAt), tableWidth(m.width))
+		row := boxRow(formatClusterRow(tableWidth, cluster.ID, cluster.Name, renderEMRState(cluster.State), cluster.CreatedAt), tableWidth)
 		if start+i == m.emrSelected {
 			row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
 		}
 		lines = append(lines, row)
 	}
-	lines = append(lines, boxBottom(tableWidth(m.width)))
+	lines = append(lines, boxBottom(tableWidth))
 
 	content := lipgloss.NewStyle().
 		Padding(1, 2).
@@ -421,15 +456,14 @@ func (m model) emrMaxPage() int {
 	return (len(m.emrClusters) - 1) / m.emrPageSize()
 }
 
-func formatClusterRow(id, name, state, primaryNodePrivateDNS, createdAt string) string {
-	return fmt.Sprintf(
-		"%-22s  %-26s  %-24s  %-42s  %-19s",
-		truncate(id, 22),
-		truncate(name, 26),
-		truncate(state, 24),
-		truncate(primaryNodePrivateDNS, 42),
-		truncate(createdAt, 19),
-	)
+func formatClusterRow(tableWidth int, id, name, state, createdAt string) string {
+	idWidth, nameWidth, stateWidth, createdAtWidth := emrClusterColumnWidths(tableWidth)
+	return strings.Join([]string{
+		formatCell(id, idWidth),
+		formatCell(name, nameWidth),
+		formatCell(state, stateWidth),
+		formatCell(createdAt, createdAtWidth),
+	}, "  ")
 }
 
 func renderEMRState(state string) string {
@@ -438,6 +472,26 @@ func renderEMRState(state string) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● WAITING")
 	case "RUNNING":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● RUNNING")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● " + state)
+	}
+}
+
+func renderStepState(state string, blink bool) string {
+	switch state {
+	case "COMPLETED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● COMPLETED")
+	case "FAILED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● FAILED")
+	case "CANCELLED", "CANCEL_PENDING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● " + state)
+	case "PENDING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("● PENDING")
+	case "RUNNING":
+		if blink {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● RUNNING")
+		}
+		return "  RUNNING"
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● " + state)
 	}
@@ -454,6 +508,42 @@ func truncate(value string, width int) string {
 	}
 
 	return string(runes[:width-1]) + "…"
+}
+
+func formatCell(value string, width int) string {
+	if lipgloss.Width(value) > width {
+		value = truncate(value, width)
+	}
+
+	return padRight(value, width)
+}
+
+func emrClusterColumnWidths(tableWidth int) (int, int, int, int) {
+	innerWidth := max(tableWidth-2, 0)
+	gapWidth := 6
+	idWidth := 22
+	stateWidth := 16
+	createdAtWidth := 19
+	nameWidth := max(innerWidth-gapWidth-idWidth-stateWidth-createdAtWidth, 10)
+
+	return idWidth, nameWidth, stateWidth, createdAtWidth
+}
+
+func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int) {
+	innerWidth := max(tableWidth-2, 0)
+	gapWidth := 10
+	idWidth := 18
+	stateWidth := 18
+	createdAtWidth := 19
+	startedAtWidth := 19
+	endedAtWidth := 19
+	nameWidth := innerWidth - gapWidth - idWidth - stateWidth - createdAtWidth - startedAtWidth - endedAtWidth
+	if nameWidth < 12 {
+		nameWidth = 12
+		idWidth = max(innerWidth-gapWidth-nameWidth-stateWidth-createdAtWidth-startedAtWidth-endedAtWidth, 8)
+	}
+
+	return idWidth, nameWidth, stateWidth, createdAtWidth, startedAtWidth, endedAtWidth
 }
 
 func loadEMRClusters() tea.Cmd {
@@ -476,36 +566,27 @@ func loadEMRClusterDetail(clusterID string) tea.Cmd {
 	}
 }
 
-func (m model) renderEMRDetail(base string) string {
-	_ = base
-
-	width := min(max(m.width-8, 70), 132)
-	height := min(max(m.height-4, 18), m.height)
-
-	var content string
-	switch {
-	case m.emrDetail.loading:
-		content = "Loading EMR cluster detail..."
-	case m.emrDetail.err != "":
-		content = "EMR cluster detail failed\n\n" + m.emrDetail.err + "\n\nPress Enter to close."
-	default:
-		content = m.renderEMRDetailContent(width)
+func (m model) renderEMRDetailPage(height int) string {
+	if m.emrDetail.loading {
+		return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, "Loading EMR cluster detail...")
+	}
+	if m.emrDetail.err != "" {
+		return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, "EMR cluster detail failed\n\n"+m.emrDetail.err)
 	}
 
-	dialog := lipgloss.NewStyle().
-		Width(width).
+	content := m.renderEMRDetailContent(tableWidth(m.width))
+	return lipgloss.NewStyle().
+		Width(m.width).
 		Height(height).
 		Padding(1, 2).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("62")).
 		Render(content)
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
 }
 
-func (m model) renderEMRDetailContent(width int) string {
+func (m model) renderEMRDetailContent(tableWidth int) string {
 	detail := m.emrDetail.detail
-	tableWidth := max(width-6, 40)
+	stepStart := m.emrDetail.stepPage * emrDetailStepPageSize
+	stepEnd := min(stepStart+emrDetailStepPageSize, len(detail.Steps))
+	totalStepPages := m.emrDetailMaxStepPage() + 1
 
 	lines := []string{
 		"EMR Cluster Detail",
@@ -516,41 +597,71 @@ func (m model) renderEMRDetailContent(width int) string {
 		boxRow("Name: "+detail.Name, tableWidth),
 		boxRow("State: "+detail.State, tableWidth),
 		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
+		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
+		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
 		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
 		boxRow("Created At: "+detail.CreatedAt, tableWidth),
 		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
 		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
-		boxRow("Log URI: "+detail.LogURI, tableWidth),
 		boxBottom(tableWidth),
 		"",
-		"最近 10 个 Step",
+		"实例种类和数量",
 		boxTop(tableWidth),
-		boxRow(formatStepRow("ID", "Name", "State", "Created At", "Started At", "Ended At"), tableWidth),
+		boxRow(formatInstanceRow("Kind", "Type", "Count"), tableWidth),
 		boxSeparator(tableWidth),
 	}
+
+	if len(detail.Instances) == 0 {
+		lines = append(lines, boxRow("No instances found.", tableWidth))
+	} else {
+		for _, instance := range detail.Instances {
+			lines = append(lines, boxRow(formatInstanceRow(instance.Kind, instance.Type, instance.Count), tableWidth))
+		}
+	}
+
+	lines = append(lines,
+		boxBottom(tableWidth),
+		"",
+		fmt.Sprintf("Step  Page %d/%d  Total %d", m.emrDetail.stepPage+1, totalStepPages, len(detail.Steps)),
+		boxTop(tableWidth),
+		boxRow(formatStepRow(tableWidth, "ID", "Name", "State", "Created At", "Started At", "Ended At"), tableWidth),
+		boxSeparator(tableWidth),
+	)
 
 	if len(detail.Steps) == 0 {
 		lines = append(lines, boxRow("No steps found.", tableWidth))
 	} else {
-		for _, step := range detail.Steps {
-			lines = append(lines, boxRow(formatStepRow(step.ID, step.Name, step.State, step.CreatedAt, step.StartedAt, step.EndedAt), tableWidth))
+		for i, step := range detail.Steps[stepStart:stepEnd] {
+			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, renderStepState(step.State, m.statusBlink), step.CreatedAt, step.StartedAt, step.EndedAt), tableWidth)
+			if stepStart+i == m.emrDetail.stepSelected {
+				row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
+			}
+			lines = append(lines, row)
 		}
 	}
 
-	lines = append(lines, boxBottom(tableWidth), "", "Press Enter to close.")
+	lines = append(lines, boxBottom(tableWidth))
 	return strings.Join(lines, "\n")
 }
 
-func formatStepRow(id, name, state, createdAt, startedAt, endedAt string) string {
-	return fmt.Sprintf(
-		"%-18s  %-24s  %-12s  %-19s  %-19s  %-19s",
-		truncate(id, 18),
-		truncate(name, 24),
-		truncate(state, 12),
-		truncate(createdAt, 19),
-		truncate(startedAt, 19),
-		truncate(endedAt, 19),
-	)
+func formatInstanceRow(kind, instanceType, count string) string {
+	return strings.Join([]string{
+		formatCell(kind, 12),
+		formatCell(instanceType, 40),
+		formatCell(count, 8),
+	}, "  ")
+}
+
+func formatStepRow(tableWidth int, id, name, state, createdAt, startedAt, endedAt string) string {
+	idWidth, nameWidth, stateWidth, createdAtWidth, startedAtWidth, endedAtWidth := emrStepColumnWidths(tableWidth)
+	return strings.Join([]string{
+		formatCell(id, idWidth),
+		formatCell(name, nameWidth),
+		formatCell(state, stateWidth),
+		formatCell(createdAt, createdAtWidth),
+		formatCell(startedAt, startedAtWidth),
+		formatCell(endedAt, endedAtWidth),
+	}, "  ")
 }
 
 func tableWidth(screenWidth int) int {
@@ -571,16 +682,34 @@ func boxBottom(width int) string {
 
 func boxRow(content string, width int) string {
 	innerWidth := max(width-2, 0)
-	return "│" + padRight(truncate(content, innerWidth), innerWidth) + "│"
+	return "│" + formatCell(content, innerWidth) + "│"
 }
 
 func padRight(value string, width int) string {
-	length := len([]rune(value))
+	length := lipgloss.Width(value)
 	if length >= width {
 		return value
 	}
 
 	return value + strings.Repeat(" ", width-length)
+}
+
+func (m model) emrDetailMaxStepPage() int {
+	if len(m.emrDetail.detail.Steps) == 0 {
+		return 0
+	}
+
+	return (len(m.emrDetail.detail.Steps) - 1) / emrDetailStepPageSize
+}
+
+func hasRunningStep(steps []appemr.Step) bool {
+	for _, step := range steps {
+		if step.State == "RUNNING" {
+			return true
+		}
+	}
+
+	return false
 }
 
 func (m model) renderRemoteDisplay(height int) string {
