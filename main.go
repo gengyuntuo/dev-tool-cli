@@ -26,6 +26,7 @@ const remoteSharePort = "20022"
 const localSSHAddr = "127.0.0.1:22"
 const localConnectAddr = "127.0.0.1:20022"
 const remoteConnectAddr = "127.0.0.1:20022"
+const remotePageSize = 10
 
 var menus = []string{"EMR", "Remote", "Help"}
 
@@ -41,10 +42,14 @@ type model struct {
 	emrSelected        int
 	emrDetail          emrDetailState
 	remoteDialog       remoteShareDialog
+	remoteDeleteDialog remoteDeleteDialog
 	remoteShareLoading bool
 	remoteShare        *tunnel.RemoteForward
+	remoteForwards     map[int]*tunnel.RemoteForward
 	remoteShareRecords []remoteShareRecord
 	remoteShareSeq     int
+	remotePage         int
+	remoteSelected     int
 	statusBlink        bool
 	remoteShareErr     string
 }
@@ -59,6 +64,11 @@ type remoteShareDialog struct {
 	keys     []string
 	keyIndex int
 	err      string
+}
+
+type remoteDeleteDialog struct {
+	visible bool
+	id      int
 }
 
 type emrDetailState struct {
@@ -114,6 +124,11 @@ type remoteShareStartedMsg struct {
 	err     error
 }
 
+type remoteForwardEventMsg struct {
+	id    int
+	event tunnel.ForwardEvent
+}
+
 type blinkStatusMsg struct{}
 
 func (m model) Init() tea.Cmd {
@@ -125,6 +140,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.remoteDialog.visible {
 			return m.updateRemoteDialog(msg)
+		}
+		if m.remoteDeleteDialog.visible {
+			return m.updateRemoteDeleteDialog(msg)
 		}
 		if m.emrDetail.visible {
 			switch msg.String() {
@@ -185,21 +203,33 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex && m.emrPage > 0 {
 				m.emrPage--
 				m.emrSelected = m.emrPage * m.emrPageSize()
+			} else if m.activeMenu == remoteMenuIndex && m.remotePage > 0 {
+				m.remotePage--
+				m.remoteSelected = m.remotePage * remotePageSize
 			}
 		case "n":
 			if m.activeMenu == emrMenuIndex && m.emrPage < m.emrMaxPage() {
 				m.emrPage++
 				m.emrSelected = m.emrPage * m.emrPageSize()
+			} else if m.activeMenu == remoteMenuIndex && m.remotePage < m.remoteMaxPage() {
+				m.remotePage++
+				m.remoteSelected = m.remotePage * remotePageSize
 			}
 		case "up":
 			if m.activeMenu == emrMenuIndex && m.emrSelected > 0 {
 				m.emrSelected--
 				m.emrPage = m.emrSelected / m.emrPageSize()
+			} else if m.activeMenu == remoteMenuIndex && m.remoteSelected > 0 {
+				m.remoteSelected--
+				m.remotePage = m.remoteSelected / remotePageSize
 			}
 		case "down":
 			if m.activeMenu == emrMenuIndex && m.emrSelected < len(m.emrClusters)-1 {
 				m.emrSelected++
 				m.emrPage = m.emrSelected / m.emrPageSize()
+			} else if m.activeMenu == remoteMenuIndex && m.remoteSelected < len(m.remoteShareRecords)-1 {
+				m.remoteSelected++
+				m.remotePage = m.remoteSelected / remotePageSize
 			}
 		case "enter":
 			if m.activeMenu == emrMenuIndex && len(m.emrClusters) > 0 {
@@ -228,9 +258,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Loading SSH private keys..."
 				return m, loadSSHKeys()
 			}
+		case "d":
+			if m.activeMenu == remoteMenuIndex && len(m.remoteShareRecords) > 0 {
+				m.remoteDeleteDialog = remoteDeleteDialog{
+					visible: true,
+					id:      m.remoteShareRecords[m.remoteSelected].ID,
+				}
+			}
 		}
 	case tea.MouseMsg:
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.remoteDeleteDialog.visible {
+				return m.updateRemoteDeleteDialogMouse(msg)
+			}
 			if m.remoteDialog.visible {
 				return m.updateRemoteDialogMouse(msg)
 			}
@@ -314,12 +354,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteShare.Close()
 		}
 		m.remoteShare = msg.forward
+		if m.remoteForwards == nil {
+			m.remoteForwards = make(map[int]*tunnel.RemoteForward)
+		}
+		m.remoteForwards[msg.id] = msg.forward
 		m.updateRemoteShareRecord(msg.id, "connected", "")
 		m.remoteShareErr = ""
 		m.status = "Remote tunnel connected"
+		return m, waitRemoteForwardEvent(msg.id, msg.forward)
+	case remoteForwardEventMsg:
+		switch msg.event.Status {
+		case tunnel.ForwardStatusConnected:
+			m.updateRemoteShareRecord(msg.id, "connected", "")
+			m.status = "Remote tunnel reconnected"
+		case tunnel.ForwardStatusReconnecting:
+			errText := ""
+			if msg.event.Err != nil {
+				errText = msg.event.Err.Error()
+			}
+			m.updateRemoteShareRecord(msg.id, "reconnecting", errText)
+			m.status = "Remote tunnel reconnecting"
+		case tunnel.ForwardStatusClosed:
+			m.updateRemoteShareRecord(msg.id, "closed", "")
+			return m, nil
+		}
+		if forward := m.remoteForwards[msg.id]; forward != nil {
+			return m, waitRemoteForwardEvent(msg.id, forward)
+		}
 	case blinkStatusMsg:
 		m.statusBlink = !m.statusBlink
-		if m.hasConnectingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.steps)) {
+		if m.hasActiveBlinkingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.steps)) {
 			return m, blinkRemoteStatus()
 		}
 	}
@@ -350,6 +414,10 @@ func (m model) View() string {
 	if m.remoteDialog.visible {
 		return m.renderRemoteDialog(view)
 	}
+	if m.remoteDeleteDialog.visible {
+		return m.renderRemoteDeleteDialog(view)
+	}
+
 	return view
 }
 
@@ -404,7 +472,10 @@ func (m model) renderStatusBar() string {
 	case emrMenuIndex:
 		text = " r 刷新  ↑/↓ 选择  p 前一页  n 下一页  Enter 详情  q 退出"
 	case remoteMenuIndex:
-		text = " s 分享  c 连接  q 退出"
+		text = " s 分享  c 连接  ↑/↓ 选择  p 前一页  n 下一页  d 删除  q 退出"
+	}
+	if m.remoteDeleteDialog.visible {
+		text = " Enter 确认删除  Esc 取消  q 退出"
 	}
 	if m.emrDetail.visible {
 		text = " ↑/↓ 选择 Step  p 前一页  n 下一页  Enter 返回  q 退出"
@@ -839,12 +910,17 @@ func (m model) renderRemoteDisplay(height int) string {
 	if len(m.remoteShareRecords) == 0 {
 		lines = append(lines, "No share records.", "", "Press s to share local SSH service to a remote host.")
 	} else {
+		totalPages := m.remoteMaxPage() + 1
+		start := m.remotePage * remotePageSize
+		end := min(start+remotePageSize, len(m.remoteShareRecords))
 		lines = append(lines,
+			fmt.Sprintf("Page %d/%d  Total %d", m.remotePage+1, totalPages, len(m.remoteShareRecords)),
+			"",
 			formatShareRow("Action", "User", "Host", "Port", "Key", "Remote", "Local", "Started At", "Status"),
 			strings.Repeat("-", min(m.width, 150)),
 		)
-		for _, record := range m.remoteShareRecords {
-			lines = append(lines, formatShareRow(
+		for i, record := range m.remoteShareRecords[start:end] {
+			row := formatShareRow(
 				record.Action,
 				record.User,
 				record.Host,
@@ -854,7 +930,11 @@ func (m model) renderRemoteDisplay(height int) string {
 				record.Local,
 				record.StartedAt,
 				renderShareStatus(record, m.statusBlink),
-			))
+			)
+			if start+i == m.remoteSelected {
+				row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
+			}
+			lines = append(lines, row)
 		}
 		lines = append(lines, strings.Repeat("-", min(m.width, 150)))
 	}
@@ -864,6 +944,14 @@ func (m model) renderRemoteDisplay(height int) string {
 		Render(strings.Join(lines, "\n"))
 
 	return lipgloss.Place(m.width, height, lipgloss.Left, lipgloss.Top, content)
+}
+
+func (m model) remoteMaxPage() int {
+	if len(m.remoteShareRecords) == 0 {
+		return 0
+	}
+
+	return (len(m.remoteShareRecords) - 1) / remotePageSize
 }
 
 func (m model) updateRemoteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -950,6 +1038,111 @@ func (m model) updateRemoteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func (m model) updateRemoteDeleteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d", "q":
+		return m, tea.Quit
+	case "esc", "n":
+		m.remoteDeleteDialog.visible = false
+		m.status = "Delete canceled"
+	case "enter", "y":
+		m.deleteRemoteRecord(m.remoteDeleteDialog.id)
+		m.remoteDeleteDialog.visible = false
+		m.status = "Remote record deleted"
+	}
+
+	return m, nil
+}
+
+func (m model) updateRemoteDeleteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	boxWidth, boxHeight := remoteDeleteDialogSize(m.width, m.height)
+	left := (m.width - boxWidth) / 2
+	top := (m.height - boxHeight) / 2
+	x := msg.X - left
+	y := msg.Y - top
+	if x < 0 || y < 0 || x >= boxWidth || y >= boxHeight {
+		return m, nil
+	}
+
+	if y == boxHeight-3 {
+		if x < boxWidth/2 {
+			m.remoteDeleteDialog.visible = false
+			m.status = "Delete canceled"
+			return m, nil
+		}
+
+		m.deleteRemoteRecord(m.remoteDeleteDialog.id)
+		m.remoteDeleteDialog.visible = false
+		m.status = "Remote record deleted"
+	}
+
+	return m, nil
+}
+
+func (m *model) deleteRemoteRecord(id int) {
+	if forward := m.remoteForwards[id]; forward != nil {
+		forward.Close()
+		delete(m.remoteForwards, id)
+	}
+
+	for i, record := range m.remoteShareRecords {
+		if record.ID == id {
+			m.remoteShareRecords = append(m.remoteShareRecords[:i], m.remoteShareRecords[i+1:]...)
+			break
+		}
+	}
+
+	if m.remoteSelected >= len(m.remoteShareRecords) {
+		m.remoteSelected = max(len(m.remoteShareRecords)-1, 0)
+	}
+	m.remotePage = m.remoteSelected / remotePageSize
+}
+
+func (m model) renderRemoteDeleteDialog(base string) string {
+	_ = base
+
+	boxWidth, _ := remoteDeleteDialogSize(m.width, m.height)
+	record := m.remoteRecordByID(m.remoteDeleteDialog.id)
+	message := "Delete selected remote tunnel?"
+	if record != nil {
+		message = fmt.Sprintf("Delete %s tunnel %s:%s?", record.Action, record.Host, record.Port)
+	}
+
+	buttons := m.deleteDialogButton("取消") + "    " + m.deleteDialogButton("确认")
+	content := lipgloss.NewStyle().
+		Width(boxWidth-4).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("196")).
+		Render(strings.Join([]string{
+			"Confirm Delete",
+			"",
+			message,
+			"",
+			buttons,
+		}, "\n"))
+
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
+}
+
+func (m model) remoteRecordByID(id int) *remoteShareRecord {
+	for i := range m.remoteShareRecords {
+		if m.remoteShareRecords[i].ID == id {
+			return &m.remoteShareRecords[i]
+		}
+	}
+
+	return nil
+}
+
+func (m model) deleteDialogButton(label string) string {
+	return lipgloss.NewStyle().Padding(0, 2).Background(lipgloss.Color("236")).Render(label)
+}
+
+func remoteDeleteDialogSize(width, height int) (int, int) {
+	return min(max(width-8, 46), 64), min(max(height-4, 8), 10)
 }
 
 func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
@@ -1168,11 +1361,13 @@ func renderShareStatus(record remoteShareRecord, blink bool) string {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● connected")
 	case "failed":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● failed")
-	case "connecting":
+	case "connecting", "reconnecting":
 		if blink {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● connecting")
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● " + record.Status)
 		}
-		return "  connecting"
+		return "  " + record.Status
+	case "closed":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● closed")
 	default:
 		return "-"
 	}
@@ -1188,13 +1383,29 @@ func (m *model) updateRemoteShareRecord(id int, status string, errText string) {
 	}
 }
 
-func (m model) hasConnectingRemoteShare() bool {
+func (m model) hasActiveBlinkingRemoteShare() bool {
 	for _, record := range m.remoteShareRecords {
-		if record.Status == "connecting" {
+		if record.Status == "connecting" || record.Status == "reconnecting" {
 			return true
 		}
 	}
 	return false
+}
+
+func waitRemoteForwardEvent(id int, forward *tunnel.RemoteForward) tea.Cmd {
+	return func() tea.Msg {
+		event, ok := <-forward.Events
+		if !ok {
+			return remoteForwardEventMsg{
+				id: id,
+				event: tunnel.ForwardEvent{
+					Status: tunnel.ForwardStatusClosed,
+				},
+			}
+		}
+
+		return remoteForwardEventMsg{id: id, event: event}
+	}
 }
 
 func blinkRemoteStatus() tea.Cmd {

@@ -26,12 +26,27 @@ const (
 type RemoteForward struct {
 	RemoteAddr string
 	LocalAddr  string
+	Events     <-chan ForwardEvent
+	events     chan<- ForwardEvent
 	close      func()
 }
 
 type LocalForwardSpec struct {
 	LocalAddr  string
 	RemoteAddr string
+}
+
+type ForwardStatus string
+
+const (
+	ForwardStatusConnected    ForwardStatus = "connected"
+	ForwardStatusReconnecting ForwardStatus = "reconnecting"
+	ForwardStatusClosed       ForwardStatus = "closed"
+)
+
+type ForwardEvent struct {
+	Status ForwardStatus
+	Err    error
 }
 
 func (f *RemoteForward) Close() {
@@ -44,6 +59,7 @@ func (f *RemoteForward) Close() {
 // 10 seconds if the SSH connection or remote listener is interrupted.
 func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr string, keyPath string, remoteAddr string, localAddr string) (*RemoteForward, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	events := make(chan ForwardEvent, 16)
 
 	done := make(chan error, 1)
 	client, listener, err := startRemoteForwardOnce(ctx, user, sshAddr, keyPath, remoteAddr, localAddr, done)
@@ -53,17 +69,19 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 	}
 
 	go func() {
-		defer client.Close()
-		defer listener.Close()
-
 		currentClient := client
 		currentListener := listener
+		defer close(events)
 
 		for {
 			select {
 			case <-ctx.Done():
+				emitForwardEvent(events, ForwardStatusClosed, nil)
+				_ = currentListener.Close()
+				_ = currentClient.Close()
 				return
-			case <-done:
+			case err := <-done:
+				emitForwardEvent(events, ForwardStatusReconnecting, err)
 				_ = currentListener.Close()
 				_ = currentClient.Close()
 			}
@@ -82,6 +100,7 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 				currentClient = nextClient
 				currentListener = nextListener
 				done = nextDone
+				emitForwardEvent(events, ForwardStatusConnected, nil)
 				break
 			}
 		}
@@ -90,6 +109,8 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 	return &RemoteForward{
 		RemoteAddr: remoteAddr,
 		LocalAddr:  localAddr,
+		Events:     events,
+		events:     events,
 		close:      cancel,
 	}, nil
 }
@@ -98,6 +119,7 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 // SOCKS5 dynamic forward, then recreates them every 10 seconds if SSH breaks.
 func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr string, keyPath string, forwards []LocalForwardSpec, socksAddr string) (*RemoteForward, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	events := make(chan ForwardEvent, 16)
 
 	done := make(chan error, 1)
 	client, listeners, err := startLocalForwardGroupOnce(ctx, user, sshAddr, keyPath, forwards, socksAddr, done)
@@ -109,14 +131,17 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 	go func() {
 		currentClient := client
 		currentListeners := listeners
-		defer currentClient.Close()
-		defer closeListeners(currentListeners)
+		defer close(events)
 
 		for {
 			select {
 			case <-ctx.Done():
+				emitForwardEvent(events, ForwardStatusClosed, nil)
+				closeListeners(currentListeners)
+				_ = currentClient.Close()
 				return
-			case <-done:
+			case err := <-done:
+				emitForwardEvent(events, ForwardStatusReconnecting, err)
 				closeListeners(currentListeners)
 				_ = currentClient.Close()
 			}
@@ -135,6 +160,7 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 				currentClient = nextClient
 				currentListeners = nextListeners
 				done = nextDone
+				emitForwardEvent(events, ForwardStatusConnected, nil)
 				break
 			}
 		}
@@ -143,6 +169,8 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 	return &RemoteForward{
 		RemoteAddr: sshAddr,
 		LocalAddr:  localForwardSummary(forwards, socksAddr),
+		Events:     events,
+		events:     events,
 		close:      cancel,
 	}, nil
 }
@@ -219,6 +247,12 @@ func startRemoteForwardOnce(ctx context.Context, user string, sshAddr string, ke
 	if err != nil {
 		return nil, nil, err
 	}
+
+	go func() {
+		if err := client.Wait(); err != nil && ctx.Err() == nil {
+			notifyForwardDone(ctx, done, fmt.Errorf("ssh connection interrupted: %w", err))
+		}
+	}()
 
 	go func() {
 		<-ctx.Done()
@@ -388,6 +422,13 @@ func notifyForwardDone(ctx context.Context, done chan<- error, err error) {
 
 	select {
 	case done <- err:
+	default:
+	}
+}
+
+func emitForwardEvent(events chan<- ForwardEvent, status ForwardStatus, err error) {
+	select {
+	case events <- ForwardEvent{Status: status, Err: err}:
 	default:
 	}
 }
