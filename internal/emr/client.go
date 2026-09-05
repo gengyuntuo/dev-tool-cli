@@ -28,7 +28,11 @@ type ClusterDetail struct {
 	StepConcurrency string
 	Applications    []string
 	Instances       []InstanceSummary
-	Steps           []Step
+}
+
+type StepPage struct {
+	Steps      []Step
+	NextMarker string
 }
 
 type InstanceSummary struct {
@@ -134,12 +138,6 @@ func GetClusterDetail(ctx context.Context, region string, clusterID string) (Clu
 	}
 	detail.Instances = instances
 
-	steps, err := listSteps(ctx, client, clusterID)
-	if err != nil {
-		return ClusterDetail{}, err
-	}
-	detail.Steps = steps
-
 	return detail, nil
 }
 
@@ -202,31 +200,41 @@ func lookupPrimaryNodePrivateDNSByInstanceFleet(ctx context.Context, client *aws
 	return "-"
 }
 
-func listSteps(ctx context.Context, client *awsemr.Client, clusterID string) ([]Step, error) {
-	paginator := awsemr.NewListStepsPaginator(client, &awsemr.ListStepsInput{
-		ClusterId: aws.String(clusterID),
-	})
-
-	var steps []Step
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("list emr cluster %s steps: %w", clusterID, err)
-		}
-
-		for _, step := range page.Steps {
-			steps = append(steps, Step{
-				ID:        stringValue(step.Id),
-				Name:      stringValue(step.Name),
-				State:     stepState(step.Status),
-				CreatedAt: stepTime(step.Status, "created"),
-				StartedAt: stepTime(step.Status, "started"),
-				EndedAt:   stepTime(step.Status, "ended"),
-			})
-		}
+func ListStepsPage(ctx context.Context, region string, clusterID string, marker string) (StepPage, error) {
+	client, err := NewClient(ctx, region)
+	if err != nil {
+		return StepPage{}, err
 	}
 
-	return steps, nil
+	input := &awsemr.ListStepsInput{
+		ClusterId: aws.String(clusterID),
+	}
+	if marker != "" {
+		input.Marker = aws.String(marker)
+	}
+
+	page, err := client.ListSteps(ctx, input)
+	if err != nil {
+		return StepPage{}, fmt.Errorf("list emr cluster %s steps: %w", clusterID, err)
+	}
+
+	nextMarker := ""
+	if page.Marker != nil {
+		nextMarker = *page.Marker
+	}
+	var steps []Step
+	for _, step := range page.Steps {
+		steps = append(steps, Step{
+			ID:        stringValue(step.Id),
+			Name:      stringValue(step.Name),
+			State:     stepState(step.Status),
+			CreatedAt: stepTime(step.Status, "created"),
+			StartedAt: stepTime(step.Status, "started"),
+			EndedAt:   stepTime(step.Status, "ended"),
+		})
+	}
+
+	return StepPage{Steps: steps, NextMarker: nextMarker}, nil
 }
 
 func listInstanceSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {

@@ -66,6 +66,10 @@ type emrDetailState struct {
 	loading      bool
 	err          string
 	detail       appemr.ClusterDetail
+	steps        []appemr.Step
+	stepLoading  bool
+	stepErr      string
+	stepMarker   string
 	stepPage     int
 	stepSelected int
 }
@@ -92,6 +96,11 @@ type emrClustersLoadedMsg struct {
 type emrClusterDetailLoadedMsg struct {
 	detail appemr.ClusterDetail
 	err    error
+}
+
+type emrStepsLoadedMsg struct {
+	page appemr.StepPage
+	err  error
 }
 
 type sshKeysLoadedMsg struct {
@@ -134,6 +143,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
 					m.emrDetail.stepPage++
 					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
+					m.emrDetail.stepLoading = true
+					m.emrDetail.stepErr = ""
+					return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
 				}
 				return m, nil
 			case "up":
@@ -143,9 +156,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "down":
-				if m.emrDetail.stepSelected < len(m.emrDetail.detail.Steps)-1 {
+				if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
 					m.emrDetail.stepSelected++
 					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
+					m.emrDetail.stepLoading = true
+					m.emrDetail.stepErr = ""
+					return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
 				}
 				return m, nil
 			}
@@ -250,11 +267,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		m.emrDetail.detail = msg.detail
+		m.emrDetail.steps = nil
+		m.emrDetail.stepLoading = true
+		m.emrDetail.stepErr = ""
+		m.emrDetail.stepMarker = ""
 		m.emrDetail.stepPage = 0
 		m.emrDetail.stepSelected = 0
 		m.emrDetail.err = ""
 		m.status = "Loaded EMR cluster detail"
-		if hasRunningStep(msg.detail.Steps) {
+		return m, loadEMRSteps(msg.detail.ID, "")
+	case emrStepsLoadedMsg:
+		m.emrDetail.stepLoading = false
+		if msg.err != nil {
+			m.emrDetail.stepErr = msg.err.Error()
+			m.status = "Failed to load EMR steps"
+			break
+		}
+
+		m.emrDetail.steps = append(m.emrDetail.steps, msg.page.Steps...)
+		m.emrDetail.stepMarker = msg.page.NextMarker
+		m.emrDetail.stepErr = ""
+		m.status = fmt.Sprintf("Loaded %d EMR steps", len(m.emrDetail.steps))
+		if hasRunningStep(m.emrDetail.steps) {
 			return m, blinkRemoteStatus()
 		}
 	case sshKeysLoadedMsg:
@@ -285,7 +319,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.status = "Remote tunnel connected"
 	case blinkStatusMsg:
 		m.statusBlink = !m.statusBlink
-		if m.hasConnectingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.detail.Steps)) {
+		if m.hasConnectingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.steps)) {
 			return m, blinkRemoteStatus()
 		}
 	}
@@ -566,6 +600,16 @@ func loadEMRClusterDetail(clusterID string) tea.Cmd {
 	}
 }
 
+func loadEMRSteps(clusterID string, marker string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		page, err := appemr.ListStepsPage(ctx, "", clusterID, marker)
+		return emrStepsLoadedMsg{page: page, err: err}
+	}
+}
+
 func (m model) renderEMRDetailPage(height int) string {
 	if m.emrDetail.loading {
 		return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, "Loading EMR cluster detail...")
@@ -585,8 +629,12 @@ func (m model) renderEMRDetailPage(height int) string {
 func (m model) renderEMRDetailContent(tableWidth int) string {
 	detail := m.emrDetail.detail
 	stepStart := m.emrDetail.stepPage * emrDetailStepPageSize
-	stepEnd := min(stepStart+emrDetailStepPageSize, len(detail.Steps))
+	stepEnd := min(stepStart+emrDetailStepPageSize, len(m.emrDetail.steps))
 	totalStepPages := m.emrDetailMaxStepPage() + 1
+	if m.emrDetail.stepMarker != "" {
+		totalStepPagesLabel := fmt.Sprintf("%d+", totalStepPages)
+		return m.renderEMRDetailContentWithStepPageLabel(tableWidth, stepStart, stepEnd, totalStepPagesLabel)
+	}
 
 	lines := []string{
 		"EMR Cluster Detail",
@@ -622,16 +670,83 @@ func (m model) renderEMRDetailContent(tableWidth int) string {
 	lines = append(lines,
 		boxBottom(tableWidth),
 		"",
-		fmt.Sprintf("Step  Page %d/%d  Total %d", m.emrDetail.stepPage+1, totalStepPages, len(detail.Steps)),
+		fmt.Sprintf("Step  Page %d/%d  Loaded %d", m.emrDetail.stepPage+1, totalStepPages, len(m.emrDetail.steps)),
 		boxTop(tableWidth),
 		boxRow(formatStepRow(tableWidth, "ID", "Name", "State", "Created At", "Started At", "Ended At"), tableWidth),
 		boxSeparator(tableWidth),
 	)
 
-	if len(detail.Steps) == 0 {
+	if m.emrDetail.stepLoading {
+		lines = append(lines, boxRow("Loading steps...", tableWidth))
+	} else if m.emrDetail.stepErr != "" {
+		lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
+	} else if len(m.emrDetail.steps) == 0 {
 		lines = append(lines, boxRow("No steps found.", tableWidth))
 	} else {
-		for i, step := range detail.Steps[stepStart:stepEnd] {
+		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
+			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, renderStepState(step.State, m.statusBlink), step.CreatedAt, step.StartedAt, step.EndedAt), tableWidth)
+			if stepStart+i == m.emrDetail.stepSelected {
+				row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
+			}
+			lines = append(lines, row)
+		}
+	}
+
+	lines = append(lines, boxBottom(tableWidth))
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderEMRDetailContentWithStepPageLabel(tableWidth, stepStart, stepEnd int, totalStepPagesLabel string) string {
+	detail := m.emrDetail.detail
+
+	lines := []string{
+		"EMR Cluster Detail",
+		"",
+		"基本信息",
+		boxTop(tableWidth),
+		boxRow("ID: "+detail.ID, tableWidth),
+		boxRow("Name: "+detail.Name, tableWidth),
+		boxRow("State: "+detail.State, tableWidth),
+		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
+		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
+		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
+		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
+		boxRow("Created At: "+detail.CreatedAt, tableWidth),
+		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
+		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
+		boxBottom(tableWidth),
+		"",
+		"实例种类和数量",
+		boxTop(tableWidth),
+		boxRow(formatInstanceRow("Kind", "Type", "Count"), tableWidth),
+		boxSeparator(tableWidth),
+	}
+
+	if len(detail.Instances) == 0 {
+		lines = append(lines, boxRow("No instances found.", tableWidth))
+	} else {
+		for _, instance := range detail.Instances {
+			lines = append(lines, boxRow(formatInstanceRow(instance.Kind, instance.Type, instance.Count), tableWidth))
+		}
+	}
+
+	lines = append(lines,
+		boxBottom(tableWidth),
+		"",
+		fmt.Sprintf("Step  Page %d/%s  Loaded %d", m.emrDetail.stepPage+1, totalStepPagesLabel, len(m.emrDetail.steps)),
+		boxTop(tableWidth),
+		boxRow(formatStepRow(tableWidth, "ID", "Name", "State", "Created At", "Started At", "Ended At"), tableWidth),
+		boxSeparator(tableWidth),
+	)
+
+	if m.emrDetail.stepLoading {
+		lines = append(lines, boxRow("Loading more steps...", tableWidth))
+	} else if m.emrDetail.stepErr != "" {
+		lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
+	} else if len(m.emrDetail.steps) == 0 {
+		lines = append(lines, boxRow("No steps found.", tableWidth))
+	} else {
+		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
 			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, renderStepState(step.State, m.statusBlink), step.CreatedAt, step.StartedAt, step.EndedAt), tableWidth)
 			if stepStart+i == m.emrDetail.stepSelected {
 				row = lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Render(row)
@@ -695,11 +810,11 @@ func padRight(value string, width int) string {
 }
 
 func (m model) emrDetailMaxStepPage() int {
-	if len(m.emrDetail.detail.Steps) == 0 {
+	if len(m.emrDetail.steps) == 0 {
 		return 0
 	}
 
-	return (len(m.emrDetail.detail.Steps) - 1) / emrDetailStepPageSize
+	return (len(m.emrDetail.steps) - 1) / emrDetailStepPageSize
 }
 
 func hasRunningStep(steps []appemr.Step) bool {
