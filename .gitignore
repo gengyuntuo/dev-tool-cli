@@ -1,0 +1,15 @@
+# Binaries
+/dev-tool-cli
+*.exe
+*.test
+
+# Build output
+/dist/
+/build/
+
+# Local editor settings
+/.idea/
+.vscode/
+
+# OS files
+.DS_Store
