@@ -55,8 +55,8 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 		"hadoop",
 		"2026-09-06 15:00:00",
 		"1时2分3秒",
-		"RUNNING",
 		"UNDEFINED",
+		"RUNNING",
 	)
 	if !strings.Contains(row, applicationID) {
 		t.Fatalf("formatYarnRow() truncated application ID: %q", row)
@@ -65,7 +65,7 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 		t.Fatalf("formatYarnRow() truncated final status: %q", row)
 	}
 
-	idWidth, nameWidth, _, startedAtWidth, elapsedWidth, stateWidth, finalStatusWidth := emrYarnColumnWidths(128)
+	idWidth, nameWidth, _, startedAtWidth, elapsedWidth, finalStatusWidth, stateWidth := emrYarnColumnWidths(128)
 	if idWidth != 32 {
 		t.Fatalf("ID width = %d, want 32", idWidth)
 	}

@@ -557,7 +557,7 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 		"YARN Applications",
 		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.yarnPage+1, m.emrDetailYarnMaxPage()+1, len(m.emrDetail.yarnApps)),
 		boxTop(tableWidth),
-		boxRow(formatYarnRow(tableWidth, "ID", "Name", "User", "Started At", "Elapsed", "State", "Final Status"), tableWidth),
+		boxRow(formatYarnRow(tableWidth, "ID", "Name", "User", "Started At", "Elapsed", "Final Status", "State"), tableWidth),
 		boxSeparator(tableWidth),
 	}
 	if m.emrDetail.yarnLoading {
@@ -575,8 +575,8 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 				app.User,
 				app.StartedAt,
 				app.Elapsed,
-				renderYarnState(app.State, m.statusBlink),
 				renderYarnFinalStatus(app.FinalStatus),
+				renderYarnState(app.State, m.statusBlink),
 			), tableWidth)
 			if appStart+i == m.emrDetail.yarnSelected {
 				row = selectedRowStyle(row, tableWidth)
@@ -888,16 +888,16 @@ func formatStepRow(tableWidth int, id, name, createdAt, startedAt, endedAt, elap
 	}, "  ")
 }
 
-func formatYarnRow(tableWidth int, id, name, user, startedAt, elapsed, state, finalStatus string) string {
-	idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth, finalStatusWidth := emrYarnColumnWidths(tableWidth)
+func formatYarnRow(tableWidth int, id, name, user, startedAt, elapsed, finalStatus, state string) string {
+	idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, finalStatusWidth, stateWidth := emrYarnColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
 		formatCell(user, userWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCellRight(elapsed, elapsedWidth),
-		formatCell(state, stateWidth),
 		formatCell(finalStatus, finalStatusWidth),
+		formatCell(state, stateWidth),
 	}, "  ")
 }
 
