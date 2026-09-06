@@ -1,6 +1,7 @@
 package app
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ const remoteSharePort = "20022"
 const localSSHAddr = "127.0.0.1:22"
 const localConnectAddr = "127.0.0.1:20022"
 const remoteConnectAddr = "127.0.0.1:20022"
+const localProxyAddr = "127.0.0.1:10800"
 const remotePageSize = 10
 
 var menus = []string{"EMR", "Remote", "Help"}
@@ -39,10 +41,12 @@ type model struct {
 	emrDetail          emrDetailState
 	emrItemDialog      emrItemDialog
 	remoteDialog       remoteShareDialog
+	remoteProxyDialog  remoteProxyDialog
 	remoteDeleteDialog remoteDeleteDialog
+	remoteErrorDialog  remoteErrorDialog
 	remoteShareLoading bool
-	remoteShare        *tunnel.RemoteForward
 	remoteForwards     map[int]*tunnel.RemoteForward
+	remoteConfigs      map[int]remoteConnectionConfig
 	remoteShareRecords []remoteShareRecord
 	remoteShareSeq     int
 	remotePage         int
@@ -66,6 +70,28 @@ type remoteShareDialog struct {
 type remoteDeleteDialog struct {
 	visible bool
 	id      int
+}
+
+type remoteProxyDialog struct {
+	visible  bool
+	username string
+	password string
+	focus    int
+	err      string
+}
+
+type remoteErrorDialog struct {
+	visible bool
+	message string
+}
+
+type remoteConnectionConfig struct {
+	action   string
+	username string
+	host     string
+	port     string
+	keyPath  string
+	password string
 }
 
 type emrDetailState struct {
@@ -107,6 +133,7 @@ type remoteShareRecord struct {
 	StartedAt string
 	Status    string
 	Error     string
+	RetryIn   int
 }
 
 type emrClustersLoadedMsg struct {
@@ -138,6 +165,7 @@ type remoteShareStartedMsg struct {
 	id      int
 	forward *tunnel.RemoteForward
 	err     error
+	manual  bool
 }
 
 type remoteForwardEventMsg struct {
@@ -161,13 +189,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.remoteDialog.visible {
 			return m.updateRemoteDialog(msg)
 		}
+		if m.remoteProxyDialog.visible {
+			return m.updateRemoteProxyDialog(msg)
+		}
+		if m.remoteErrorDialog.visible {
+			return m.updateRemoteErrorDialog(msg)
+		}
 		if m.remoteDeleteDialog.visible {
 			return m.updateRemoteDeleteDialog(msg)
 		}
 		if m.emrItemDialog.visible {
 			switch msg.String() {
 			case "ctrl+c", "ctrl+d", "q":
-				return m, tea.Quit
+				return m.quit()
 			case "esc":
 				m.emrItemDialog.visible = false
 			case "up":
@@ -188,7 +222,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.emrDetail.visible {
 			switch msg.String() {
 			case "ctrl+c", "ctrl+d", "q":
-				return m, tea.Quit
+				return m.quit()
 			case "esc":
 				m.emrDetail.visible = false
 				m.emrMouseSelected = -1
@@ -285,15 +319,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		switch msg.String() {
 		case "ctrl+c", "ctrl+d":
-			return m, tea.Quit
+			return m.quit()
 		case "q":
-			return m, tea.Quit
+			return m.quit()
 		case "r":
 			if m.activeMenu == emrMenuIndex {
 				m.emrLoading = true
 				m.emrErr = ""
 				m.status = "Loading EMR clusters..."
 				return m, loadEMRClusters()
+			}
+			if m.activeMenu == remoteMenuIndex {
+				return m.retrySelectedRemote()
 			}
 			m.status = fmt.Sprintf("Refreshed %s", menus[m.activeMenu])
 		case "p":
@@ -359,6 +396,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.status = "Loading SSH private keys..."
 				return m, loadSSHKeys()
 			}
+		case "t":
+			if m.activeMenu == remoteMenuIndex {
+				m.remoteProxyDialog = remoteProxyDialog{visible: true, username: "hadoop", focus: 1}
+				m.status = "Enter SSH password for localhost:20022"
+			}
 		case "d":
 			if m.activeMenu == remoteMenuIndex && len(m.remoteShareRecords) > 0 {
 				m.remoteDeleteDialog = remoteDeleteDialog{
@@ -393,8 +435,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
+			if m.remoteErrorDialog.visible {
+				return m.updateRemoteErrorDialogMouse(msg)
+			}
 			if m.remoteDeleteDialog.visible {
 				return m.updateRemoteDeleteDialogMouse(msg)
+			}
+			if m.remoteProxyDialog.visible {
+				return m.updateRemoteProxyDialogMouse(msg)
 			}
 			if m.remoteDialog.visible {
 				return m.updateRemoteDialogMouse(msg)
@@ -426,6 +474,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.emrMouseSelected = -1
 					m.status = "Loading EMR cluster detail..."
 					return m, loadEMRClusterDetail(cluster.ID)
+				}
+			}
+			if m.activeMenu == remoteMenuIndex {
+				if index, ok := m.remoteRowIndexAtMouse(msg.Y); ok {
+					m.remoteSelected = index
 				}
 			}
 		}
@@ -509,13 +562,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteShareErr = msg.err.Error()
 			m.updateRemoteShareRecord(msg.id, "failed", msg.err.Error())
 			m.status = "Failed to start remote share"
+			if msg.manual {
+				m.remoteErrorDialog = remoteErrorDialog{visible: true, message: msg.err.Error()}
+			}
 			break
 		}
 
-		if m.remoteShare != nil {
-			m.remoteShare.Close()
-		}
-		m.remoteShare = msg.forward
 		if m.remoteForwards == nil {
 			m.remoteForwards = make(map[int]*tunnel.RemoteForward)
 		}
@@ -528,6 +580,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.event.Status {
 		case tunnel.ForwardStatusConnected:
 			m.updateRemoteShareRecord(msg.id, "connected", "")
+			m.updateRemoteRetryCountdown(msg.id, 0)
 			m.status = "Remote tunnel reconnected"
 		case tunnel.ForwardStatusReconnecting:
 			errText := ""
@@ -535,9 +588,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				errText = msg.event.Err.Error()
 			}
 			m.updateRemoteShareRecord(msg.id, "reconnecting", errText)
+			m.updateRemoteRetryCountdown(msg.id, int(msg.event.RetryIn/time.Second))
 			m.status = "Remote tunnel reconnecting"
+			if msg.event.ManualRetryFailed {
+				m.remoteErrorDialog = remoteErrorDialog{visible: true, message: errText}
+			}
 		case tunnel.ForwardStatusClosed:
 			m.updateRemoteShareRecord(msg.id, "closed", "")
+			m.updateRemoteRetryCountdown(msg.id, 0)
 			return m, nil
 		}
 		if forward := m.remoteForwards[msg.id]; forward != nil {
@@ -580,6 +638,12 @@ func (m model) View() string {
 
 	if m.remoteDialog.visible {
 		return m.renderRemoteDialog(view)
+	}
+	if m.remoteProxyDialog.visible {
+		return m.renderRemoteProxyDialog(view)
+	}
+	if m.remoteErrorDialog.visible {
+		return m.renderRemoteErrorDialog(view)
 	}
 	if m.remoteDeleteDialog.visible {
 		return m.renderRemoteDeleteDialog(view)
@@ -632,7 +696,13 @@ func (m model) renderStatusBar() string {
 	case emrMenuIndex:
 		text = " r 刷新  ↑/↓ 选择  p 前一页  n 下一页  Enter 详情  q 退出"
 	case remoteMenuIndex:
-		text = " s 分享  c 连接  ↑/↓ 选择  p 前一页  n 下一页  d 删除  q 退出"
+		text = " s 分享  c 连接  t 代理  r 重试  ↑/↓ 选择  p 前一页  n 下一页  d 删除  q 退出"
+	}
+	if m.remoteErrorDialog.visible {
+		text = " 返回<Esc/Enter>  q 退出"
+	}
+	if m.remoteProxyDialog.visible {
+		text = " Tab 切换输入框  确认<Enter>  取消<Esc>"
 	}
 	if m.remoteDeleteDialog.visible {
 		text = " 确认<Enter>  取消<Esc>  q 退出"
@@ -660,6 +730,24 @@ func (m model) renderStatusBar() string {
 
 func (m model) dialogContentHeight() int {
 	return max(m.height-statusBarHeight, 0)
+}
+
+func (m model) quit() (tea.Model, tea.Cmd) {
+	forwards := make([]*tunnel.RemoteForward, 0, len(m.remoteForwards))
+	for _, forward := range m.remoteForwards {
+		if forward != nil {
+			forward.Close()
+			forwards = append(forwards, forward)
+		}
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	for _, forward := range forwards {
+		_ = forward.Wait(ctx)
+	}
+
+	return m, tea.Quit
 }
 
 func (m model) overlayDialog(base, dialog string) string {

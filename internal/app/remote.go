@@ -73,10 +73,38 @@ func (m model) remoteMaxPage() int {
 	return (len(m.remoteShareRecords) - 1) / remotePageSize
 }
 
+func (m model) remoteRowIndexAtMouse(y int) (int, bool) {
+	if len(m.remoteShareRecords) == 0 {
+		return 0, false
+	}
+
+	firstRowY := 8
+	if m.remoteShareLoading {
+		firstRowY++
+	}
+	if m.remoteShareErr != "" {
+		firstRowY += 2
+	}
+
+	rowOffset := y - firstRowY
+	if rowOffset < 0 {
+		return 0, false
+	}
+
+	pageStart := m.remotePage * remotePageSize
+	pageEnd := min(pageStart+remotePageSize, len(m.remoteShareRecords))
+	index := pageStart + rowOffset
+	if index < pageStart || index >= pageEnd {
+		return 0, false
+	}
+
+	return index, true
+}
+
 func (m model) updateRemoteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d", "q":
-		return m, tea.Quit
+		return m.quit()
 	case "esc":
 		m.remoteDialog.visible = false
 		m.status = "Share canceled"
@@ -161,10 +189,164 @@ func (m model) updateRemoteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m model) updateRemoteProxyDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d":
+		return m.quit()
+	case "esc":
+		m.remoteProxyDialog = remoteProxyDialog{}
+		m.status = "Proxy canceled"
+	case "enter":
+		return m.confirmRemoteProxy()
+	case "tab", "shift+tab":
+		m.remoteProxyDialog.focus = (m.remoteProxyDialog.focus + 1) % 2
+	case "backspace", "ctrl+h":
+		if m.remoteProxyDialog.focus == 0 {
+			m.remoteProxyDialog.username = trimLastRune(m.remoteProxyDialog.username)
+		} else {
+			m.remoteProxyDialog.password = trimLastRune(m.remoteProxyDialog.password)
+		}
+		m.remoteProxyDialog.err = ""
+	default:
+		if len(msg.Runes) > 0 {
+			if m.remoteProxyDialog.focus == 0 {
+				m.remoteProxyDialog.username += string(msg.Runes)
+			} else {
+				m.remoteProxyDialog.password += string(msg.Runes)
+			}
+			m.remoteProxyDialog.err = ""
+		}
+	}
+
+	return m, nil
+}
+
+func (m model) updateRemoteProxyDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	dialog := m.remoteProxyDialogView()
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	left := (m.width - dialogWidth) / 2
+	top := (m.dialogContentHeight() - dialogHeight) / 2
+	x := msg.X - left
+	y := msg.Y - top
+	if x < 0 || y < 0 || x >= dialogWidth || y >= dialogHeight {
+		return m, nil
+	}
+
+	switch y {
+	case 5:
+		m.remoteProxyDialog.focus = 0
+		return m, nil
+	case 7:
+		m.remoteProxyDialog.focus = 1
+		return m, nil
+	}
+
+	if y == dialogHeight-3 {
+		if x < dialogWidth/2 {
+			m.remoteProxyDialog = remoteProxyDialog{}
+			m.status = "Proxy canceled"
+			return m, nil
+		}
+		return m.confirmRemoteProxy()
+	}
+
+	return m, nil
+}
+
+func (m model) confirmRemoteProxy() (tea.Model, tea.Cmd) {
+	username := strings.TrimSpace(m.remoteProxyDialog.username)
+	if username == "" {
+		m.remoteProxyDialog.err = "用户名不能为空"
+		return m, nil
+	}
+	if m.remoteProxyDialog.password == "" {
+		m.remoteProxyDialog.err = "密码不能为空"
+		return m, nil
+	}
+
+	password := m.remoteProxyDialog.password
+	record := remoteShareRecord{
+		ID:        m.remoteShareSeq + 1,
+		Action:    "proxy",
+		User:      username,
+		Host:      "localhost",
+		Port:      remoteSharePort,
+		Key:       "password",
+		Remote:    "-",
+		Local:     "SOCKS5 " + localProxyAddr,
+		StartedAt: time.Now().Format(time.DateTime),
+		Status:    "connecting",
+	}
+	m.remoteShareSeq++
+	m.remoteShareRecords = append(m.remoteShareRecords, record)
+	if m.remoteConfigs == nil {
+		m.remoteConfigs = make(map[int]remoteConnectionConfig)
+	}
+	m.remoteConfigs[record.ID] = remoteConnectionConfig{
+		action:   "proxy",
+		username: username,
+		host:     "localhost",
+		port:     remoteSharePort,
+		password: password,
+	}
+	m.remoteProxyDialog = remoteProxyDialog{}
+	m.remoteShareLoading = true
+	m.remoteShareErr = ""
+	m.status = "Starting SSH dynamic proxy..."
+
+	return m, tea.Batch(startRemoteProxy(record.ID, username, password, false), blinkRemoteStatus())
+}
+
+func (m model) renderRemoteProxyDialog(base string) string {
+	return m.overlayDialog(base, m.remoteProxyDialogView())
+}
+
+func (m model) remoteProxyDialogView() string {
+	boxWidth := min(max(m.width-8, 50), 64)
+	maskedPassword := strings.Repeat("*", len([]rune(m.remoteProxyDialog.password)))
+	if maskedPassword == "" {
+		maskedPassword = " "
+	}
+
+	lines := []string{
+		"创建动态代理",
+		"",
+		"用户名",
+		m.proxyDialogField(0, m.remoteProxyDialog.username),
+		"请输入密码",
+		m.proxyDialogField(1, maskedPassword),
+		"",
+		"SSH: localhost:" + remoteSharePort,
+		"SOCKS5: " + localProxyAddr,
+	}
+	if m.remoteProxyDialog.err != "" {
+		lines = append(lines, "", lipgloss.NewStyle().
+			Foreground(lipgloss.Color("196")).
+			Render(m.remoteProxyDialog.err))
+	}
+
+	buttons := m.dialogButton(-1, "取消<Esc>") + "    " + m.dialogButton(-1, "确认<Enter>")
+	return lipgloss.NewStyle().
+		Width(boxWidth-6).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Render(strings.Join(append(lines, "", buttons), "\n"))
+}
+
+func (m model) proxyDialogField(index int, value string) string {
+	style := lipgloss.NewStyle().Width(44).Padding(0, 1).Background(lipgloss.Color("236"))
+	if m.remoteProxyDialog.focus == index {
+		style = style.Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62"))
+	}
+	return style.Render(value)
+}
+
 func (m model) updateRemoteDeleteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d", "q":
-		return m, tea.Quit
+		return m.quit()
 	case "esc":
 		m.remoteDeleteDialog.visible = false
 		m.status = "Delete canceled"
@@ -217,6 +399,7 @@ func (m *model) deleteRemoteRecord(id int) {
 		forward.Close()
 		delete(m.remoteForwards, id)
 	}
+	delete(m.remoteConfigs, id)
 
 	for i, record := range m.remoteShareRecords {
 		if record.ID == id {
@@ -320,6 +503,16 @@ func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
 	}
 	m.remoteShareSeq++
 	m.remoteShareRecords = append(m.remoteShareRecords, record)
+	if m.remoteConfigs == nil {
+		m.remoteConfigs = make(map[int]remoteConnectionConfig)
+	}
+	m.remoteConfigs[record.ID] = remoteConnectionConfig{
+		action:   action,
+		username: username,
+		host:     ip,
+		port:     port,
+		keyPath:  keyPath,
+	}
 	m.remoteDialog.visible = false
 	m.remoteShareLoading = true
 	m.remoteShareErr = ""
@@ -327,10 +520,10 @@ func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
 
 	if action == "connect" {
 		m.status = "Starting SSH connect tunnel..."
-		return m, tea.Batch(startRemoteConnect(record.ID, username, ip, port, keyPath), blinkRemoteStatus())
+		return m, tea.Batch(startRemoteConnect(record.ID, username, ip, port, keyPath, false), blinkRemoteStatus())
 	}
 
-	return m, tea.Batch(startRemoteShare(record.ID, username, ip, port, keyPath), blinkRemoteStatus())
+	return m, tea.Batch(startRemoteShare(record.ID, username, ip, port, keyPath, false), blinkRemoteStatus())
 }
 
 func (m model) renderRemoteDialog(base string) string {
@@ -421,7 +614,7 @@ func loadSSHKeys() tea.Cmd {
 	}
 }
 
-func startRemoteShare(id int, username string, ip string, port string, keyPath string) tea.Cmd {
+func startRemoteShare(id int, username string, ip string, port string, keyPath string, manual bool) tea.Cmd {
 	return func() tea.Msg {
 		remoteAddr := net.JoinHostPort("0.0.0.0", remoteSharePort)
 		forward, err := tunnel.StartAutoReconnectRemoteForward(
@@ -432,11 +625,11 @@ func startRemoteShare(id int, username string, ip string, port string, keyPath s
 			remoteAddr,
 			localSSHAddr,
 		)
-		return remoteShareStartedMsg{id: id, forward: forward, err: err}
+		return remoteShareStartedMsg{id: id, forward: forward, err: err, manual: manual}
 	}
 }
 
-func startRemoteConnect(id int, username string, ip string, port string, keyPath string) tea.Cmd {
+func startRemoteConnect(id int, username string, ip string, port string, keyPath string, manual bool) tea.Cmd {
 	return func() tea.Msg {
 		forward, err := tunnel.StartAutoReconnectLocalForwards(
 			context.Background(),
@@ -451,7 +644,20 @@ func startRemoteConnect(id int, username string, ip string, port string, keyPath
 			},
 			"",
 		)
-		return remoteShareStartedMsg{id: id, forward: forward, err: err}
+		return remoteShareStartedMsg{id: id, forward: forward, err: err, manual: manual}
+	}
+}
+
+func startRemoteProxy(id int, username string, password string, manual bool) tea.Cmd {
+	return func() tea.Msg {
+		forward, err := tunnel.StartAutoReconnectPasswordDynamicForward(
+			context.Background(),
+			username,
+			net.JoinHostPort("localhost", remoteSharePort),
+			password,
+			localProxyAddr,
+		)
+		return remoteShareStartedMsg{id: id, forward: forward, err: err, manual: manual}
 	}
 }
 
@@ -462,10 +668,14 @@ func renderShareStatus(record remoteShareRecord, blink bool) string {
 	case "failed":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● failed")
 	case "connecting", "reconnecting":
-		if blink {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● " + record.Status)
+		status := record.Status
+		if record.Status == "reconnecting" && record.RetryIn > 0 {
+			status = fmt.Sprintf("%s (%ds)", status, record.RetryIn)
 		}
-		return "  " + record.Status
+		if blink {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● " + status)
+		}
+		return "  " + status
 	case "closed":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● closed")
 	default:
@@ -481,6 +691,117 @@ func (m *model) updateRemoteShareRecord(id int, status string, errText string) {
 			return
 		}
 	}
+}
+
+func (m *model) updateRemoteRetryCountdown(id int, seconds int) {
+	for i := range m.remoteShareRecords {
+		if m.remoteShareRecords[i].ID == id {
+			m.remoteShareRecords[i].RetryIn = seconds
+			return
+		}
+	}
+}
+
+func (m model) retrySelectedRemote() (tea.Model, tea.Cmd) {
+	if len(m.remoteShareRecords) == 0 {
+		m.status = "No remote connection selected"
+		return m, nil
+	}
+
+	record := m.remoteShareRecords[m.remoteSelected]
+	switch record.Status {
+	case "connected", "connecting":
+		m.status = "Selected remote connection is already active"
+		return m, nil
+	case "reconnecting":
+		if forward := m.remoteForwards[record.ID]; forward != nil {
+			forward.Retry()
+			m.updateRemoteRetryCountdown(record.ID, 0)
+			m.status = "Retrying remote connection now..."
+			return m, nil
+		}
+	}
+
+	config, ok := m.remoteConfigs[record.ID]
+	if !ok {
+		m.remoteErrorDialog = remoteErrorDialog{
+			visible: true,
+			message: "Connection settings are unavailable for retry.",
+		}
+		return m, nil
+	}
+
+	m.updateRemoteShareRecord(record.ID, "connecting", "")
+	m.updateRemoteRetryCountdown(record.ID, 0)
+	m.remoteShareLoading = true
+	m.status = "Retrying remote connection..."
+	return m, tea.Batch(startRemoteFromConfig(record.ID, config, true), blinkRemoteStatus())
+}
+
+func startRemoteFromConfig(id int, config remoteConnectionConfig, manual bool) tea.Cmd {
+	switch config.action {
+	case "share":
+		return startRemoteShare(id, config.username, config.host, config.port, config.keyPath, manual)
+	case "connect":
+		return startRemoteConnect(id, config.username, config.host, config.port, config.keyPath, manual)
+	case "proxy":
+		return startRemoteProxy(id, config.username, config.password, manual)
+	default:
+		return func() tea.Msg {
+			return remoteShareStartedMsg{
+				id:     id,
+				err:    fmt.Errorf("unsupported remote action %q", config.action),
+				manual: manual,
+			}
+		}
+	}
+}
+
+func (m model) updateRemoteErrorDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "ctrl+d", "q":
+		return m.quit()
+	case "esc", "enter":
+		m.remoteErrorDialog = remoteErrorDialog{}
+	}
+	return m, nil
+}
+
+func (m model) updateRemoteErrorDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	dialog := m.remoteErrorDialogView()
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	left := (m.width - dialogWidth) / 2
+	top := (m.dialogContentHeight() - dialogHeight) / 2
+	if msg.X >= left && msg.X < left+dialogWidth && msg.Y == top+dialogHeight-3 {
+		m.remoteErrorDialog = remoteErrorDialog{}
+	}
+	return m, nil
+}
+
+func (m model) renderRemoteErrorDialog(base string) string {
+	return m.overlayDialog(base, m.remoteErrorDialogView())
+}
+
+func (m model) remoteErrorDialogView() string {
+	boxWidth := min(max(m.width-8, 50), 90)
+	button := lipgloss.NewStyle().
+		Padding(0, 2).
+		Foreground(lipgloss.Color("230")).
+		Background(lipgloss.Color("62")).
+		Render("返回<Esc/Enter>")
+	return lipgloss.NewStyle().
+		Width(boxWidth-6).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("196")).
+		Render(strings.Join([]string{
+			"连接重试失败",
+			"",
+			m.remoteErrorDialog.message,
+			"",
+			button,
+		}, "\n"))
 }
 
 func (m model) hasActiveBlinkingRemoteShare() bool {

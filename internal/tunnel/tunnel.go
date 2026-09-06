@@ -28,6 +28,8 @@ type RemoteForward struct {
 	LocalAddr  string
 	Events     <-chan ForwardEvent
 	events     chan<- ForwardEvent
+	retry      chan struct{}
+	done       <-chan struct{}
 	close      func()
 }
 
@@ -45,8 +47,10 @@ const (
 )
 
 type ForwardEvent struct {
-	Status ForwardStatus
-	Err    error
+	Status            ForwardStatus
+	Err               error
+	RetryIn           time.Duration
+	ManualRetryFailed bool
 }
 
 func (f *RemoteForward) Close() {
@@ -55,11 +59,35 @@ func (f *RemoteForward) Close() {
 	}
 }
 
+func (f *RemoteForward) Retry() {
+	if f == nil || f.retry == nil {
+		return
+	}
+	select {
+	case f.retry <- struct{}{}:
+	default:
+	}
+}
+
+func (f *RemoteForward) Wait(ctx context.Context) error {
+	if f == nil || f.done == nil {
+		return nil
+	}
+	select {
+	case <-f.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
 // StartAutoReconnectRemoteForward starts a remote forward and recreates it every
 // 10 seconds if the SSH connection or remote listener is interrupted.
 func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr string, keyPath string, remoteAddr string, localAddr string) (*RemoteForward, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	events := make(chan ForwardEvent, 16)
+	retry := make(chan struct{}, 1)
+	closed := make(chan struct{})
 
 	done := make(chan error, 1)
 	client, listener, err := startRemoteForwardOnce(ctx, user, sshAddr, keyPath, remoteAddr, localAddr, done)
@@ -72,6 +100,7 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 		currentClient := client
 		currentListener := listener
 		defer close(events)
+		defer close(closed)
 
 		for {
 			select {
@@ -87,13 +116,19 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 			}
 
 			for {
-				if err := waitBeforeReconnect(ctx); err != nil {
+				manual, err := waitBeforeReconnect(ctx, retry, func(remaining time.Duration) {
+					emitForwardRetryEvent(events, remaining)
+				})
+				if err != nil {
 					return
 				}
 
 				nextDone := make(chan error, 1)
 				nextClient, nextListener, err := startRemoteForwardOnce(ctx, user, sshAddr, keyPath, remoteAddr, localAddr, nextDone)
 				if err != nil {
+					if manual {
+						emitManualRetryFailure(events, err)
+					}
 					continue
 				}
 
@@ -111,6 +146,8 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 		LocalAddr:  localAddr,
 		Events:     events,
 		events:     events,
+		retry:      retry,
+		done:       closed,
 		close:      cancel,
 	}, nil
 }
@@ -120,6 +157,8 @@ func StartAutoReconnectRemoteForward(ctx context.Context, user string, sshAddr s
 func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr string, keyPath string, forwards []LocalForwardSpec, socksAddr string) (*RemoteForward, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	events := make(chan ForwardEvent, 16)
+	retry := make(chan struct{}, 1)
+	closed := make(chan struct{})
 
 	done := make(chan error, 1)
 	client, listeners, err := startLocalForwardGroupOnce(ctx, user, sshAddr, keyPath, forwards, socksAddr, done)
@@ -132,6 +171,7 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 		currentClient := client
 		currentListeners := listeners
 		defer close(events)
+		defer close(closed)
 
 		for {
 			select {
@@ -147,13 +187,19 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 			}
 
 			for {
-				if err := waitBeforeReconnect(ctx); err != nil {
+				manual, err := waitBeforeReconnect(ctx, retry, func(remaining time.Duration) {
+					emitForwardRetryEvent(events, remaining)
+				})
+				if err != nil {
 					return
 				}
 
 				nextDone := make(chan error, 1)
 				nextClient, nextListeners, err := startLocalForwardGroupOnce(ctx, user, sshAddr, keyPath, forwards, socksAddr, nextDone)
 				if err != nil {
+					if manual {
+						emitManualRetryFailure(events, err)
+					}
 					continue
 				}
 
@@ -171,6 +217,79 @@ func StartAutoReconnectLocalForwards(ctx context.Context, user string, sshAddr s
 		LocalAddr:  localForwardSummary(forwards, socksAddr),
 		Events:     events,
 		events:     events,
+		retry:      retry,
+		done:       closed,
+		close:      cancel,
+	}, nil
+}
+
+// StartAutoReconnectPasswordDynamicForward starts a SOCKS5 proxy through an
+// SSH server authenticated with a password and reconnects if SSH is interrupted.
+func StartAutoReconnectPasswordDynamicForward(ctx context.Context, user string, sshAddr string, password string, socksAddr string) (*RemoteForward, error) {
+	ctx, cancel := context.WithCancel(ctx)
+	events := make(chan ForwardEvent, 16)
+	retry := make(chan struct{}, 1)
+	closed := make(chan struct{})
+
+	done := make(chan error, 1)
+	client, listeners, err := startPasswordDynamicForwardOnce(ctx, user, sshAddr, password, socksAddr, done)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+
+	go func() {
+		currentClient := client
+		currentListeners := listeners
+		defer close(events)
+		defer close(closed)
+
+		for {
+			select {
+			case <-ctx.Done():
+				emitForwardEvent(events, ForwardStatusClosed, nil)
+				closeListeners(currentListeners)
+				_ = currentClient.Close()
+				return
+			case err := <-done:
+				emitForwardEvent(events, ForwardStatusReconnecting, err)
+				closeListeners(currentListeners)
+				_ = currentClient.Close()
+			}
+
+			for {
+				manual, err := waitBeforeReconnect(ctx, retry, func(remaining time.Duration) {
+					emitForwardRetryEvent(events, remaining)
+				})
+				if err != nil {
+					return
+				}
+
+				nextDone := make(chan error, 1)
+				nextClient, nextListeners, err := startPasswordDynamicForwardOnce(ctx, user, sshAddr, password, socksAddr, nextDone)
+				if err != nil {
+					if manual {
+						emitManualRetryFailure(events, err)
+					}
+					continue
+				}
+
+				currentClient = nextClient
+				currentListeners = nextListeners
+				done = nextDone
+				emitForwardEvent(events, ForwardStatusConnected, nil)
+				break
+			}
+		}
+	}()
+
+	return &RemoteForward{
+		RemoteAddr: sshAddr,
+		LocalAddr:  "SOCKS5 " + socksAddr,
+		Events:     events,
+		events:     events,
+		retry:      retry,
+		done:       closed,
 		close:      cancel,
 	}, nil
 }
@@ -221,6 +340,7 @@ func StartLocalForward(ctx context.Context, client *ssh.Client, localAddr string
 
 func StartRemoteForward(ctx context.Context, user string, sshAddr string, keyPath string, remoteAddr string, localAddr string) (*RemoteForward, error) {
 	ctx, cancel := context.WithCancel(ctx)
+	closed := make(chan struct{})
 
 	done := make(chan error, 1)
 	client, listener, err := startRemoteForwardOnce(ctx, user, sshAddr, keyPath, remoteAddr, localAddr, done)
@@ -230,6 +350,7 @@ func StartRemoteForward(ctx context.Context, user string, sshAddr string, keyPat
 	}
 
 	go func() {
+		defer close(closed)
 		<-ctx.Done()
 		_ = listener.Close()
 		_ = client.Close()
@@ -238,6 +359,7 @@ func StartRemoteForward(ctx context.Context, user string, sshAddr string, keyPat
 	return &RemoteForward{
 		RemoteAddr: remoteAddr,
 		LocalAddr:  localAddr,
+		done:       closed,
 		close:      cancel,
 	}, nil
 }
@@ -324,6 +446,35 @@ func startLocalForwardGroupOnce(ctx context.Context, user string, sshAddr string
 	return client, listeners, nil
 }
 
+func startPasswordDynamicForwardOnce(ctx context.Context, user string, sshAddr string, password string, socksAddr string, done chan<- error) (*ssh.Client, []net.Listener, error) {
+	client, err := connectWithPassword(ctx, user, sshAddr, password)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	go func() {
+		if err := client.Wait(); err != nil && ctx.Err() == nil {
+			notifyForwardDone(ctx, done, fmt.Errorf("ssh connection interrupted: %w", err))
+		}
+	}()
+
+	listener, err := net.Listen("tcp", socksAddr)
+	if err != nil {
+		_ = client.Close()
+		return nil, nil, fmt.Errorf("listen socks %s: %w", socksAddr, err)
+	}
+	listeners := []net.Listener{listener}
+	go acceptSOCKS5(ctx, client, listener, done)
+
+	go func() {
+		<-ctx.Done()
+		closeListeners(listeners)
+		_ = client.Close()
+	}()
+
+	return client, listeners, nil
+}
+
 func connectWithPrivateKey(ctx context.Context, user string, sshAddr string, keyPath string) (*ssh.Client, error) {
 	key, err := os.ReadFile(keyPath)
 	if err != nil {
@@ -359,6 +510,41 @@ func connectWithPrivateKey(ctx context.Context, user string, sshAddr string, key
 	if err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("establish ssh connection %s as %s using %s: %w", sshAddr, user, keyPath, err)
+	}
+
+	return ssh.NewClient(sshConn, chans, reqs), nil
+}
+
+func connectWithPassword(ctx context.Context, user string, sshAddr string, password string) (*ssh.Client, error) {
+	host, _, err := net.SplitHostPort(sshAddr)
+	if err != nil {
+		return nil, fmt.Errorf("parse password SSH address %s: %w", sshAddr, err)
+	}
+	ip := net.ParseIP(host)
+	if !strings.EqualFold(host, "localhost") && (ip == nil || !ip.IsLoopback()) {
+		return nil, fmt.Errorf("password SSH connection is restricted to localhost, got %s", host)
+	}
+
+	config := &ssh.ClientConfig{
+		User: user,
+		Auth: []ssh.AuthMethod{
+			ssh.Password(password),
+		},
+		// The password proxy only connects through the local loopback tunnel.
+		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
+		Timeout:         sshDialTimeout,
+	}
+
+	dialer := net.Dialer{Timeout: sshDialTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", sshAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dial ssh %s as %s: %w", sshAddr, user, err)
+	}
+
+	sshConn, chans, reqs, err := ssh.NewClientConn(conn, sshAddr, config)
+	if err != nil {
+		_ = conn.Close()
+		return nil, fmt.Errorf("establish ssh connection %s as %s using password: %w", sshAddr, user, err)
 	}
 
 	return ssh.NewClient(sshConn, chans, reqs), nil
@@ -433,15 +619,45 @@ func emitForwardEvent(events chan<- ForwardEvent, status ForwardStatus, err erro
 	}
 }
 
-func waitBeforeReconnect(ctx context.Context) error {
-	timer := time.NewTimer(reconnectInterval)
-	defer timer.Stop()
-
+func emitForwardRetryEvent(events chan<- ForwardEvent, remaining time.Duration) {
 	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
+	case events <- ForwardEvent{Status: ForwardStatusReconnecting, RetryIn: remaining}:
+	default:
+	}
+}
+
+func emitManualRetryFailure(events chan<- ForwardEvent, err error) {
+	select {
+	case events <- ForwardEvent{
+		Status:            ForwardStatusReconnecting,
+		Err:               err,
+		ManualRetryFailed: true,
+	}:
+	default:
+	}
+}
+
+func waitBeforeReconnect(ctx context.Context, retry <-chan struct{}, notify func(time.Duration)) (bool, error) {
+	remaining := reconnectInterval
+	notify(remaining)
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return false, ctx.Err()
+		case <-retry:
+			notify(0)
+			return true, nil
+		case <-ticker.C:
+			remaining -= time.Second
+			if remaining <= 0 {
+				notify(0)
+				return false, nil
+			}
+			notify(remaining)
+		}
 	}
 }
 
