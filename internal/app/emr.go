@@ -164,18 +164,37 @@ func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	gapWidth := 10
-	idWidth := 32
-	userWidth := 12
-	startedAtWidth := 19
-	elapsedWidth := 16
-	stateWidth := 12
-	nameWidth := innerWidth - gapWidth - idWidth - userWidth - startedAtWidth - elapsedWidth - stateWidth
-	if nameWidth < 12 {
-		nameWidth = 12
-		idWidth = max(innerWidth-gapWidth-nameWidth-userWidth-startedAtWidth-elapsedWidth-stateWidth, 16)
+	availableWidth := max(innerWidth-gapWidth, 6)
+	widths := []int{16, 12, 8, 10, 10, 10}
+	minimumWidth := 0
+	for _, width := range widths {
+		minimumWidth += width
+	}
+	if availableWidth < minimumWidth {
+		widths = []int{8, 8, 3, 3, 3, 3}
 	}
 
-	return idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth
+	remaining := availableWidth
+	for _, width := range widths {
+		remaining -= width
+	}
+	grow := func(index, target int) {
+		increase := min(max(target-widths[index], 0), max(remaining, 0))
+		widths[index] += increase
+		remaining -= increase
+	}
+
+	grow(0, 32)
+	grow(1, 36)
+	grow(2, 12)
+	grow(3, 19)
+	grow(4, 16)
+	grow(5, 12)
+	if remaining > 0 {
+		widths[1] += remaining
+	}
+
+	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5]
 }
 
 func loadEMRClusters() tea.Cmd {
@@ -226,10 +245,17 @@ func (m model) renderEMRDetailPage(height int) string {
 		return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, "EMR cluster detail failed\n\n"+m.emrDetail.err)
 	}
 
-	content := m.renderEMRDetailContent(tableWidth(m.width))
+	content := m.renderEMRDetailContent(m.emrDetailTableWidth())
 	body := lipgloss.NewStyle().Padding(1, 2).Render(content)
 	return m.renderEMRDetailTabs(m.width) + "\n" +
 		lipgloss.Place(m.width, max(height-1, 0), lipgloss.Left, lipgloss.Top, body)
+}
+
+func (m model) emrDetailTableWidth() int {
+	if m.emrDetail.activeTab == "yarn" {
+		return max(min(m.width-4, 180), 40)
+	}
+	return tableWidth(m.width)
 }
 
 func (m model) renderEMRDetailContent(tableWidth int) string {
@@ -547,7 +573,7 @@ func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 	const firstDataRowY = 7
 
-	if msg.X < 2 || msg.X >= 2+tableWidth(m.width) || msg.Y < firstDataRowY {
+	if msg.X < 2 || msg.X >= 2+m.emrDetailTableWidth() || msg.Y < firstDataRowY {
 		return m, nil
 	}
 

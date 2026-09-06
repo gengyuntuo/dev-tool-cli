@@ -60,6 +60,19 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 	if !strings.Contains(row, applicationID) {
 		t.Fatalf("formatYarnRow() truncated application ID: %q", row)
 	}
+
+	idWidth, nameWidth, _, _, _, _ := emrYarnColumnWidths(128)
+	if idWidth != 32 {
+		t.Fatalf("ID width = %d, want 32", idWidth)
+	}
+	if nameWidth < 36 {
+		t.Fatalf("Name width = %d, want at least 36", nameWidth)
+	}
+
+	_, wideNameWidth, _, _, _, _ := emrYarnColumnWidths(180)
+	if wideNameWidth <= nameWidth {
+		t.Fatalf("wide Name width = %d, want greater than %d", wideNameWidth, nameWidth)
+	}
 }
 
 func TestEMRDetailPageSizeUsesAvailableHeight(t *testing.T) {
