@@ -472,6 +472,43 @@ func formatYarnDuration(ms int64) string {
 	return strings.Join(parts, "")
 }
 
+func formatClusterDuration(ms int64) string {
+	if ms <= 0 {
+		return "0秒"
+	}
+
+	totalSeconds := ms / 1000
+	years := totalSeconds / (365 * 24 * 60 * 60)
+	totalSeconds %= 365 * 24 * 60 * 60
+	months := totalSeconds / (30 * 24 * 60 * 60)
+	totalSeconds %= 30 * 24 * 60 * 60
+	days := totalSeconds / (24 * 60 * 60)
+	totalSeconds %= 24 * 60 * 60
+	hours := totalSeconds / (60 * 60)
+	totalSeconds %= 60 * 60
+	minutes := totalSeconds / 60
+	seconds := totalSeconds % 60
+
+	parts := make([]string, 0, 6)
+	if years > 0 {
+		parts = append(parts, fmt.Sprintf("%d年", years))
+	}
+	if months > 0 || len(parts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d月", months))
+	}
+	if days > 0 || len(parts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d天", days))
+	}
+	if hours > 0 || len(parts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d时", hours))
+	}
+	if minutes > 0 || len(parts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d分", minutes))
+	}
+	parts = append(parts, fmt.Sprintf("%d秒", seconds))
+	return strings.Join(parts, "")
+}
+
 func listInstanceSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {
 	groups, groupErr := listInstanceGroupSummaries(ctx, client, clusterID)
 	if groupErr == nil && len(groups) > 0 {
@@ -612,7 +649,7 @@ func clusterElapsed(status *types.ClusterStatus) string {
 	if end.Before(*status.Timeline.CreationDateTime) {
 		return "-"
 	}
-	return formatYarnDuration(end.Sub(*status.Timeline.CreationDateTime).Milliseconds())
+	return formatClusterDuration(end.Sub(*status.Timeline.CreationDateTime).Milliseconds())
 }
 
 func clusterStateChangeReason(status *types.ClusterStatus) string {

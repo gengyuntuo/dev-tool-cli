@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 func (m model) renderEMRDisplay(height int) string {
@@ -114,16 +115,13 @@ func renderStepState(state string, blink bool) string {
 }
 
 func truncate(value string, width int) string {
-	runes := []rune(value)
-	if len(runes) <= width {
+	if lipgloss.Width(value) <= width {
 		return value
 	}
-
-	if width <= 1 {
-		return string(runes[:width])
+	if width <= 0 {
+		return ""
 	}
-
-	return string(runes[:width-1]) + "…"
+	return ansi.Truncate(value, width, "…")
 }
 
 func formatCell(value string, width int) string {
@@ -292,24 +290,24 @@ func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetai
 	lines := []string{
 		"Cluster Overview",
 		boxTop(tableWidth),
-		boxRow("ID: "+detail.ID, tableWidth),
-		boxRow("Name: "+detail.Name, tableWidth),
-		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
-		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
-		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
-		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
-		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
-		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
+		boxRow(overviewField("ID", detail.ID), tableWidth),
+		boxRow(overviewField("Name", detail.Name), tableWidth),
+		boxRow(overviewField("Release", detail.ReleaseLabel), tableWidth),
+		boxRow(overviewField("S3 Log URI", detail.LogURI), tableWidth),
+		boxRow(overviewField("Primary node private DNS", detail.PrimaryNodePrivateDNS), tableWidth),
+		boxRow(overviewField("Step Concurrency", detail.StepConcurrency), tableWidth),
+		boxRow(overviewField("Service Role", detail.ServiceRole), tableWidth),
+		boxRow(overviewField("Applications", strings.Join(detail.Applications, ", ")), tableWidth),
 		boxBottom(tableWidth),
 		"",
 		"Status and time",
 		boxTop(tableWidth),
-		boxRow("State: "+detail.State, tableWidth),
-		boxRow("State change reason: "+detail.StateChangeReason, tableWidth),
-		boxRow("Created At: "+detail.CreatedAt, tableWidth),
-		boxRow("Ready At: "+detail.ReadyAt, tableWidth),
-		boxRow("Ended At: "+detail.EndedAt, tableWidth),
-		boxRow("Elapsed: "+detail.Elapsed, tableWidth),
+		boxRow(overviewField("State", detail.State), tableWidth),
+		boxRow(overviewField("State change reason", detail.StateChangeReason), tableWidth),
+		boxRow(overviewField("Created At", detail.CreatedAt), tableWidth),
+		boxRow(overviewField("Ready At", detail.ReadyAt), tableWidth),
+		boxRow(overviewField("Ended At", detail.EndedAt), tableWidth),
+		boxRow(overviewField("Elapsed", detail.Elapsed), tableWidth),
 		boxBottom(tableWidth),
 	}
 
@@ -321,12 +319,22 @@ func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetai
 			boxTop(tableWidth),
 		)
 		for _, link := range uiLinks {
-			lines = append(lines, boxRow(link, tableWidth))
+			label, url, _ := strings.Cut(link, ": ")
+			lines = append(lines, boxRow(overviewField(label, url), tableWidth))
 		}
 		lines = append(lines, boxBottom(tableWidth))
 	}
 
 	return strings.Join(lines, "\n")
+}
+
+func overviewField(label, value string) string {
+	labelText := lipgloss.NewStyle().
+		Width(26).
+		Bold(true).
+		Foreground(lipgloss.Color("75")).
+		Render(label + ":")
+	return labelText + " " + value
 }
 
 func applicationUILinks(detail appemr.ClusterDetail) []string {
@@ -634,59 +642,72 @@ func (m model) emrItemDialogFields() []string {
 		}
 		step := m.emrDetail.steps[m.emrItemDialog.index]
 		fields := []string{
-			"ID: " + step.ID,
-			"Name: " + step.Name,
-			"Created At: " + step.CreatedAt,
-			"Started At: " + step.StartedAt,
-			"Ended At: " + step.EndedAt,
-			"Elapsed: " + step.Elapsed,
-			"State: " + step.State,
+			detailField("ID", step.ID),
+			detailField("Name", step.Name),
+			detailField("Created At", step.CreatedAt),
+			detailField("Started At", step.StartedAt),
+			detailField("Ended At", step.EndedAt),
+			detailField("Elapsed", step.Elapsed),
+			detailField("State", step.State),
 		}
-		return append(fields, stepLogLinks(step, m.emrDetail.detail)...)
+		for _, logLink := range stepLogLinks(step, m.emrDetail.detail) {
+			label, url, _ := strings.Cut(logLink, ": ")
+			fields = append(fields, detailField(label, url))
+		}
+		return fields
 	case "yarn":
 		if m.emrItemDialog.index < 0 || m.emrItemDialog.index >= len(m.emrDetail.yarnApps) {
 			return nil
 		}
 		app := m.emrDetail.yarnApps[m.emrItemDialog.index]
 		return []string{
-			"ID: " + app.ID,
-			"Name: " + app.Name,
-			"User: " + app.User,
-			"Queue: " + app.Queue,
-			"Application Type: " + app.ApplicationType,
-			"Application Tags: " + app.ApplicationTags,
-			"Priority: " + app.Priority,
-			"State: " + app.State,
-			"Final Status: " + app.FinalStatus,
-			"Progress: " + app.Progress,
-			"Started At: " + app.StartedAt,
-			"Finished At: " + app.FinishedAt,
-			"Elapsed: " + app.Elapsed,
-			"Tracking URL: " + app.TrackingURL,
-			"Diagnostics: " + app.Diagnostics,
-			"AM Container Logs: " + app.AMContainerLogs,
-			"AM Host HTTP Address: " + app.AMHostHTTPAddress,
-			"Allocated Memory: " + app.AllocatedMB + " MB",
-			"Allocated vCores: " + app.AllocatedVCores,
-			"Reserved Memory: " + app.ReservedMB + " MB",
-			"Reserved vCores: " + app.ReservedVCores,
-			"Running Containers: " + app.RunningContainers,
-			"Memory Seconds: " + app.MemorySeconds,
-			"vCore Seconds: " + app.VCoreSeconds,
-			"Queue Usage: " + app.QueueUsagePercentage,
-			"Cluster Usage: " + app.ClusterUsagePercentage,
-			"Preempted Memory: " + app.PreemptedResourceMB + " MB",
-			"Preempted vCores: " + app.PreemptedResourceVCores,
-			"Non-AM Containers Preempted: " + app.NonAMContainersPreempted,
-			"AM Containers Preempted: " + app.AMContainersPreempted,
-			"Log Aggregation Status: " + app.LogAggregationStatus,
-			"Unmanaged Application: " + app.UnmanagedApplication,
-			"App Node Label: " + app.AppNodeLabelExpression,
-			"AM Node Label: " + app.AMNodeLabelExpression,
+			detailField("ID", app.ID),
+			detailField("Name", app.Name),
+			detailField("User", app.User),
+			detailField("Queue", app.Queue),
+			detailField("Application Type", app.ApplicationType),
+			detailField("Application Tags", app.ApplicationTags),
+			detailField("Priority", app.Priority),
+			detailField("State", app.State),
+			detailField("Final Status", app.FinalStatus),
+			detailField("Progress", app.Progress),
+			detailField("Started At", app.StartedAt),
+			detailField("Finished At", app.FinishedAt),
+			detailField("Elapsed", app.Elapsed),
+			detailField("Tracking URL", app.TrackingURL),
+			detailField("Diagnostics", app.Diagnostics),
+			detailField("AM Container Logs", app.AMContainerLogs),
+			detailField("AM Host HTTP Address", app.AMHostHTTPAddress),
+			detailField("Allocated Memory", app.AllocatedMB+" MB"),
+			detailField("Allocated vCores", app.AllocatedVCores),
+			detailField("Reserved Memory", app.ReservedMB+" MB"),
+			detailField("Reserved vCores", app.ReservedVCores),
+			detailField("Running Containers", app.RunningContainers),
+			detailField("Memory Seconds", app.MemorySeconds),
+			detailField("vCore Seconds", app.VCoreSeconds),
+			detailField("Queue Usage", app.QueueUsagePercentage),
+			detailField("Cluster Usage", app.ClusterUsagePercentage),
+			detailField("Preempted Memory", app.PreemptedResourceMB+" MB"),
+			detailField("Preempted vCores", app.PreemptedResourceVCores),
+			detailField("Non-AM Containers Preempted", app.NonAMContainersPreempted),
+			detailField("AM Containers Preempted", app.AMContainersPreempted),
+			detailField("Log Aggregation Status", app.LogAggregationStatus),
+			detailField("Unmanaged Application", app.UnmanagedApplication),
+			detailField("App Node Label", app.AppNodeLabelExpression),
+			detailField("AM Node Label", app.AMNodeLabelExpression),
 		}
 	default:
 		return nil
 	}
+}
+
+func detailField(label, value string) string {
+	labelText := lipgloss.NewStyle().
+		Width(30).
+		Bold(true).
+		Foreground(lipgloss.Color("75")).
+		Render(label + ":")
+	return labelText + " " + value
 }
 
 func (m model) emrItemDialogVisibleLines() int {
@@ -708,19 +729,13 @@ func wrapDetailLines(values []string, width int) []string {
 			continue
 		}
 
-		var line strings.Builder
-		lineWidth := 0
-		for _, r := range value {
-			runeWidth := lipgloss.Width(string(r))
-			if lineWidth > 0 && lineWidth+runeWidth > width {
-				lines = append(lines, line.String())
-				line.Reset()
-				lineWidth = 0
-			}
-			line.WriteRune(r)
-			lineWidth += runeWidth
+		for lipgloss.Width(value) > width {
+			lines = append(lines, ansi.Cut(value, 0, width))
+			value = ansi.Cut(value, width, lipgloss.Width(value))
 		}
-		lines = append(lines, line.String())
+		if value != "" {
+			lines = append(lines, value)
+		}
 	}
 	return lines
 }

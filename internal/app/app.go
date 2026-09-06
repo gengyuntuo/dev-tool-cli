@@ -35,6 +35,7 @@ type model struct {
 	emrErr             string
 	emrPage            int
 	emrSelected        int
+	emrMouseSelected   int
 	emrDetail          emrDetailState
 	emrItemDialog      emrItemDialog
 	remoteDialog       remoteShareDialog
@@ -147,7 +148,7 @@ type remoteForwardEventMsg struct {
 type blinkStatusMsg struct{}
 
 func NewModel() tea.Model {
-	return model{}
+	return model{emrMouseSelected: -1}
 }
 
 func (m model) Init() tea.Cmd {
@@ -190,6 +191,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "esc":
 				m.emrDetail.visible = false
+				m.emrMouseSelected = -1
 				return m, nil
 			case "enter":
 				if m.openSelectedEMRItemDialog() {
@@ -298,6 +300,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex && m.emrPage > 0 {
 				m.emrPage--
 				m.emrSelected = m.emrPage * m.emrPageSize()
+				m.emrMouseSelected = -1
 			} else if m.activeMenu == remoteMenuIndex && m.remotePage > 0 {
 				m.remotePage--
 				m.remoteSelected = m.remotePage * remotePageSize
@@ -306,6 +309,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex && m.emrPage < m.emrMaxPage() {
 				m.emrPage++
 				m.emrSelected = m.emrPage * m.emrPageSize()
+				m.emrMouseSelected = -1
 			} else if m.activeMenu == remoteMenuIndex && m.remotePage < m.remoteMaxPage() {
 				m.remotePage++
 				m.remoteSelected = m.remotePage * remotePageSize
@@ -314,6 +318,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex && m.emrSelected > 0 {
 				m.emrSelected--
 				m.emrPage = m.emrSelected / m.emrPageSize()
+				m.emrMouseSelected = -1
 			} else if m.activeMenu == remoteMenuIndex && m.remoteSelected > 0 {
 				m.remoteSelected--
 				m.remotePage = m.remoteSelected / remotePageSize
@@ -322,6 +327,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex && m.emrSelected < len(m.emrClusters)-1 {
 				m.emrSelected++
 				m.emrPage = m.emrSelected / m.emrPageSize()
+				m.emrMouseSelected = -1
 			} else if m.activeMenu == remoteMenuIndex && m.remoteSelected < len(m.remoteShareRecords)-1 {
 				m.remoteSelected++
 				m.remotePage = m.remoteSelected / remotePageSize
@@ -376,6 +382,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
+		if m.emrDetail.visible && m.emrDetail.activeTab == "overview" {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				m.emrDetail.overviewScroll = max(m.emrDetail.overviewScroll-1, 0)
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				m.emrDetail.overviewScroll = min(m.emrDetail.overviewScroll+1, m.emrOverviewMaxScroll())
+				return m, nil
+			}
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.remoteDeleteDialog.visible {
 				return m.updateRemoteDeleteDialogMouse(msg)
@@ -401,8 +417,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.activeMenu == emrMenuIndex {
 				if index, ok := m.emrRowIndexAtMouse(msg.Y); ok {
 					m.emrSelected = index
+					if m.emrMouseSelected != index {
+						m.emrMouseSelected = index
+						return m, nil
+					}
 					cluster := m.emrClusters[index]
 					m.emrDetail = emrDetailState{visible: true, loading: true}
+					m.emrMouseSelected = -1
 					m.status = "Loading EMR cluster detail..."
 					return m, loadEMRClusterDetail(cluster.ID)
 				}
@@ -422,6 +443,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrClusters = msg.clusters
 		m.emrPage = 0
 		m.emrSelected = 0
+		m.emrMouseSelected = -1
 		m.emrErr = ""
 		m.status = fmt.Sprintf("Loaded %d running EMR clusters", len(msg.clusters))
 	case emrClusterDetailLoadedMsg:
@@ -617,6 +639,13 @@ func (m model) renderStatusBar() string {
 	}
 	if m.emrDetail.visible {
 		text = " Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
+		if m.emrDetail.activeTab == "overview" {
+			text = fmt.Sprintf(
+				" Tab 切换 section  ↑/↓/滚轮 滚动  p/n 翻页  位置 %d/%d  Esc 返回  q 退出",
+				m.emrDetail.overviewScroll+1,
+				m.emrOverviewMaxScroll()+1,
+			)
+		}
 	}
 	if m.emrItemDialog.visible {
 		text = " ↑/↓ 滚动  PgUp/PgDn 翻页  返回<Esc>  q 退出"
