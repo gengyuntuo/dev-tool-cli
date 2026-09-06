@@ -909,7 +909,16 @@ func renderYarnState(state string, blink bool) string {
 }
 
 func renderYarnFinalStatus(status string) string {
-	return yarnStatusStyle(status).Render(status)
+	color := lipgloss.Color("255")
+	switch status {
+	case "SUCCEEDED":
+		color = lipgloss.Color("42")
+	case "FAILED":
+		color = lipgloss.Color("196")
+	case "KILLED":
+		color = lipgloss.Color("245")
+	}
+	return lipgloss.NewStyle().Foreground(color).Render(status)
 }
 
 func yarnStatusStyle(status string) lipgloss.Style {
