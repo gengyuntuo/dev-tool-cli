@@ -288,7 +288,9 @@ func (m model) renderEMRDetailTabs(tableWidth int) string {
 		items = append(items, style.Render(section.label))
 	}
 
-	return lipgloss.NewStyle().Width(tableWidth).Render(strings.Join(items, " "))
+	return lipgloss.NewStyle().
+		Width(tableWidth).
+		Render(lipgloss.JoinHorizontal(lipgloss.Top, items...))
 }
 
 func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetail) string {
@@ -339,7 +341,7 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 			"Steps",
 			fmt.Sprintf("Page %d/%s  Loaded %d", m.emrDetail.stepPage+1, totalStepPagesLabel, len(m.emrDetail.steps)),
 			boxTop(tableWidth),
-			boxRow(formatStepRow(tableWidth, "ID", "Name", "", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
+			boxRow(formatStepRow(tableWidth, "ID", "Name", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
 			boxSeparator(tableWidth),
 		}
 		if m.emrDetail.stepLoading {
@@ -350,7 +352,7 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 			lines = append(lines, boxRow("No steps found.", tableWidth))
 		} else {
 			for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
-				row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, "", step.CreatedAt, step.StartedAt, step.EndedAt, "-", renderStepState(step.State, m.statusBlink)), tableWidth)
+				row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, step.CreatedAt, step.StartedAt, step.EndedAt, step.Elapsed, renderStepState(step.State, m.statusBlink)), tableWidth)
 				if stepStart+i == m.emrDetail.stepSelected {
 					row = selectedRowStyle(row, tableWidth)
 				}
@@ -365,7 +367,7 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 		"Steps",
 		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.stepPage+1, totalStepPages, len(m.emrDetail.steps)),
 		boxTop(tableWidth),
-		boxRow(formatStepRow(tableWidth, "ID", "Name", "", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
+		boxRow(formatStepRow(tableWidth, "ID", "Name", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
 		boxSeparator(tableWidth),
 	}
 	if m.emrDetail.stepLoading {
@@ -376,7 +378,7 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 		lines = append(lines, boxRow("No steps found.", tableWidth))
 	} else {
 		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
-			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, "", step.CreatedAt, step.StartedAt, step.EndedAt, "-", renderStepState(step.State, m.statusBlink)), tableWidth)
+			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, step.CreatedAt, step.StartedAt, step.EndedAt, step.Elapsed, renderStepState(step.State, m.statusBlink)), tableWidth)
 			if stepStart+i == m.emrDetail.stepSelected {
 				row = selectedRowStyle(row, tableWidth)
 			}
@@ -418,6 +420,141 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 	return strings.Join(lines, "\n")
 }
 
+func (m *model) openSelectedEMRItemDialog() bool {
+	switch m.emrDetail.activeTab {
+	case "steps":
+		if m.emrDetail.stepSelected < 0 || m.emrDetail.stepSelected >= len(m.emrDetail.steps) {
+			return false
+		}
+		m.emrItemDialog = emrItemDialog{
+			visible: true,
+			kind:    "step",
+			index:   m.emrDetail.stepSelected,
+		}
+		return true
+	case "yarn":
+		if m.emrDetail.yarnSelected < 0 || m.emrDetail.yarnSelected >= len(m.emrDetail.yarnApps) {
+			return false
+		}
+		m.emrItemDialog = emrItemDialog{
+			visible: true,
+			kind:    "yarn",
+			index:   m.emrDetail.yarnSelected,
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	const firstDataRowY = 10
+
+	if msg.X < 2 || msg.X >= 2+tableWidth(m.width) || msg.Y < firstDataRowY {
+		return m, nil
+	}
+
+	rowOffset := msg.Y - firstDataRowY
+	switch m.emrDetail.activeTab {
+	case "steps":
+		index := m.emrDetail.stepPage*emrDetailStepPageSize + rowOffset
+		pageEnd := min((m.emrDetail.stepPage+1)*emrDetailStepPageSize, len(m.emrDetail.steps))
+		if index < m.emrDetail.stepPage*emrDetailStepPageSize || index >= pageEnd {
+			return m, nil
+		}
+		if index == m.emrDetail.stepSelected {
+			m.openSelectedEMRItemDialog()
+		} else {
+			m.emrDetail.stepSelected = index
+		}
+	case "yarn":
+		index := m.emrDetail.yarnPage*emrDetailStepPageSize + rowOffset
+		pageEnd := min((m.emrDetail.yarnPage+1)*emrDetailStepPageSize, len(m.emrDetail.yarnApps))
+		if index < m.emrDetail.yarnPage*emrDetailStepPageSize || index >= pageEnd {
+			return m, nil
+		}
+		if index == m.emrDetail.yarnSelected {
+			m.openSelectedEMRItemDialog()
+		} else {
+			m.emrDetail.yarnSelected = index
+		}
+	}
+
+	return m, nil
+}
+
+func (m model) renderEMRItemDialog(base string) string {
+	_ = base
+
+	dialog := m.emrItemDialogView()
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+}
+
+func (m model) emrItemDialogView() string {
+	boxWidth := min(max(m.width-8, 56), 100)
+	lines := make([]string, 0, 12)
+
+	switch m.emrItemDialog.kind {
+	case "step":
+		if m.emrItemDialog.index >= 0 && m.emrItemDialog.index < len(m.emrDetail.steps) {
+			step := m.emrDetail.steps[m.emrItemDialog.index]
+			lines = append(lines,
+				"Step Detail",
+				"",
+				"ID: "+step.ID,
+				"Name: "+step.Name,
+				"Created At: "+step.CreatedAt,
+				"Started At: "+step.StartedAt,
+				"Ended At: "+step.EndedAt,
+				"Elapsed: "+step.Elapsed,
+				"State: "+step.State,
+			)
+		}
+	case "yarn":
+		if m.emrItemDialog.index >= 0 && m.emrItemDialog.index < len(m.emrDetail.yarnApps) {
+			app := m.emrDetail.yarnApps[m.emrItemDialog.index]
+			lines = append(lines,
+				"YARN Application Detail",
+				"",
+				"ID: "+app.ID,
+				"Name: "+app.Name,
+				"User: "+app.User,
+				"Started At: "+app.StartedAt,
+				"Elapsed: "+app.Elapsed,
+				"State: "+app.State,
+			)
+		}
+	}
+
+	button := lipgloss.NewStyle().
+		Padding(0, 2).
+		Foreground(lipgloss.Color("230")).
+		Background(lipgloss.Color("62")).
+		Render("返回<Esc>")
+	lines = append(lines, "", button)
+
+	return lipgloss.NewStyle().
+		Width(boxWidth-6).
+		Padding(1, 2).
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("62")).
+		Render(strings.Join(lines, "\n"))
+}
+
+func (m model) updateEMRItemDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	dialog := m.emrItemDialogView()
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	left := (m.width - dialogWidth) / 2
+	top := (m.height - dialogHeight) / 2
+
+	if msg.X >= left && msg.X < left+dialogWidth && msg.Y == top+dialogHeight-3 {
+		m.emrItemDialog.visible = false
+	}
+
+	return m, nil
+}
+
 func formatInstanceRow(kind, instanceType, count string) string {
 	return strings.Join([]string{
 		formatCell(kind, 12),
@@ -426,7 +563,7 @@ func formatInstanceRow(kind, instanceType, count string) string {
 	}, "  ")
 }
 
-func formatStepRow(tableWidth int, id, name, state, createdAt, startedAt, endedAt, yarnAppID, elapsed string) string {
+func formatStepRow(tableWidth int, id, name, createdAt, startedAt, endedAt, elapsed, state string) string {
 	idWidth, nameWidth, createdAtWidth, startedAtWidth, endedAtWidth, elapsedWidth, stateWidth := emrStepColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),

@@ -163,10 +163,10 @@ func (m model) updateRemoteDeleteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "ctrl+c", "ctrl+d", "q":
 		return m, tea.Quit
-	case "esc", "n":
+	case "esc":
 		m.remoteDeleteDialog.visible = false
 		m.status = "Delete canceled"
-	case "enter", "y":
+	case "enter":
 		m.deleteRemoteRecord(m.remoteDeleteDialog.id)
 		m.remoteDeleteDialog.visible = false
 		m.status = "Remote record deleted"
@@ -176,25 +176,35 @@ func (m model) updateRemoteDeleteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateRemoteDeleteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	boxWidth, boxHeight := remoteDeleteDialogSize(m.width, m.height)
-	left := (m.width - boxWidth) / 2
-	top := (m.height - boxHeight) / 2
+	dialog := m.remoteDeleteDialogView()
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	left := (m.width - dialogWidth) / 2
+	top := (m.height - dialogHeight) / 2
 	x := msg.X - left
 	y := msg.Y - top
-	if x < 0 || y < 0 || x >= boxWidth || y >= boxHeight {
+	if x < 0 || y < 0 || x >= dialogWidth || y >= dialogHeight {
 		return m, nil
 	}
 
-	if y == boxHeight-3 {
-		if x < boxWidth/2 {
+	if y == dialogHeight-3 {
+		cancelButton := m.deleteDialogButton("取消<Esc>")
+		confirmButton := m.deleteDialogButton("确认<Enter>")
+		cancelStart := 3
+		cancelEnd := cancelStart + lipgloss.Width(cancelButton)
+		confirmStart := cancelEnd + 4
+		confirmEnd := confirmStart + lipgloss.Width(confirmButton)
+
+		if x >= cancelStart && x < cancelEnd {
 			m.remoteDeleteDialog.visible = false
 			m.status = "Delete canceled"
 			return m, nil
 		}
-
-		m.deleteRemoteRecord(m.remoteDeleteDialog.id)
-		m.remoteDeleteDialog.visible = false
-		m.status = "Remote record deleted"
+		if x >= confirmStart && x < confirmEnd {
+			m.deleteRemoteRecord(m.remoteDeleteDialog.id)
+			m.remoteDeleteDialog.visible = false
+			m.status = "Remote record deleted"
+		}
 	}
 
 	return m, nil
@@ -222,6 +232,10 @@ func (m *model) deleteRemoteRecord(id int) {
 func (m model) renderRemoteDeleteDialog(base string) string {
 	_ = base
 
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.remoteDeleteDialogView())
+}
+
+func (m model) remoteDeleteDialogView() string {
 	boxWidth, _ := remoteDeleteDialogSize(m.width, m.height)
 	record := m.remoteRecordByID(m.remoteDeleteDialog.id)
 	message := "Delete selected remote tunnel?"
@@ -229,10 +243,9 @@ func (m model) renderRemoteDeleteDialog(base string) string {
 		message = fmt.Sprintf("Delete %s tunnel %s:%s?", record.Action, record.Host, record.Port)
 	}
 
-	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("确认<Enter>   取消<Esc>")
-	buttons := m.deleteDialogButton("取消") + "    " + m.deleteDialogButton("确认")
-	content := lipgloss.NewStyle().
-		Width(boxWidth-4).
+	buttons := m.deleteDialogButton("取消<Esc>") + "    " + m.deleteDialogButton("确认<Enter>")
+	return lipgloss.NewStyle().
+		Width(boxWidth-6).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("196")).
@@ -241,12 +254,8 @@ func (m model) renderRemoteDeleteDialog(base string) string {
 			"",
 			message,
 			"",
-			hint,
-			"",
 			buttons,
 		}, "\n"))
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m model) remoteRecordByID(id int) *remoteShareRecord {

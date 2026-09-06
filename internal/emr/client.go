@@ -51,6 +51,7 @@ type Step struct {
 	CreatedAt string
 	StartedAt string
 	EndedAt   string
+	Elapsed   string
 }
 
 type YarnApplication struct {
@@ -243,6 +244,7 @@ func ListStepsPage(ctx context.Context, region string, clusterID string, marker 
 			CreatedAt: stepTime(step.Status, "created"),
 			StartedAt: stepTime(step.Status, "started"),
 			EndedAt:   stepTime(step.Status, "ended"),
+			Elapsed:   stepElapsed(step.Status),
 		})
 	}
 
@@ -503,6 +505,22 @@ func stepTime(status *types.StepStatus, field string) string {
 	}
 
 	return value.Local().Format(time.DateTime)
+}
+
+func stepElapsed(status *types.StepStatus) string {
+	if status == nil || status.Timeline == nil || status.Timeline.StartDateTime == nil {
+		return "-"
+	}
+
+	end := time.Now()
+	if status.Timeline.EndDateTime != nil {
+		end = *status.Timeline.EndDateTime
+	}
+	if end.Before(*status.Timeline.StartDateTime) {
+		return "-"
+	}
+
+	return formatYarnDuration(end.Sub(*status.Timeline.StartDateTime).Milliseconds())
 }
 
 func stringValue(value *string) string {

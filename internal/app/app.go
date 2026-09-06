@@ -35,6 +35,7 @@ type model struct {
 	emrPage            int
 	emrSelected        int
 	emrDetail          emrDetailState
+	emrItemDialog      emrItemDialog
 	remoteDialog       remoteShareDialog
 	remoteDeleteDialog remoteDeleteDialog
 	remoteShareLoading bool
@@ -82,6 +83,12 @@ type emrDetailState struct {
 	yarnErr      string
 	yarnPage     int
 	yarnSelected int
+}
+
+type emrItemDialog struct {
+	visible bool
+	kind    string
+	index   int
 }
 
 type remoteShareRecord struct {
@@ -153,6 +160,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.remoteDeleteDialog.visible {
 			return m.updateRemoteDeleteDialog(msg)
 		}
+		if m.emrItemDialog.visible {
+			switch msg.String() {
+			case "ctrl+c", "ctrl+d", "q":
+				return m, tea.Quit
+			case "esc":
+				m.emrItemDialog.visible = false
+			}
+			return m, nil
+		}
 		if m.emrDetail.visible {
 			switch msg.String() {
 			case "ctrl+c", "ctrl+d", "q":
@@ -160,6 +176,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.emrDetail.visible = false
 				return m, nil
+			case "enter":
+				if m.openSelectedEMRItemDialog() {
+					return m, nil
+				}
 			case "tab":
 				sections := []string{"overview", "steps", "yarn", "instances"}
 				current := 0
@@ -323,6 +343,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.remoteDialog.visible {
 				return m.updateRemoteDialogMouse(msg)
 			}
+			if m.emrItemDialog.visible {
+				return m.updateEMRItemDialogMouse(msg)
+			}
+			if m.emrDetail.visible {
+				return m.updateEMRDetailMouse(msg)
+			}
 
 			if msg.Y == 0 {
 				if index, ok := menuIndexAt(msg.X); ok {
@@ -473,10 +499,14 @@ func (m model) View() string {
 	displayHeight := max(m.height-1-statusBarHeight, 0)
 
 	if m.emrDetail.visible {
-		return strings.Join([]string{
+		view := strings.Join([]string{
 			m.renderEMRDetailPage(displayHeight),
 			m.renderStatusBar(),
 		}, "\n")
+		if m.emrItemDialog.visible {
+			return m.renderEMRItemDialog(view)
+		}
+		return view
 	}
 
 	view := strings.Join([]string{
@@ -546,6 +576,9 @@ func (m model) renderStatusBar() string {
 	}
 	if m.emrDetail.visible {
 		text = " Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
+	}
+	if m.emrItemDialog.visible {
+		text = " 返回<Esc>  q 退出"
 	}
 
 	return lipgloss.NewStyle().
