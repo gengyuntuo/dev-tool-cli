@@ -52,16 +52,17 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 		128,
 		applicationID,
 		"daily-data-processing",
-		"RUNNING",
 		"hadoop",
 		"2026-09-06 15:00:00",
 		"1时2分3秒",
+		"RUNNING",
+		"UNDEFINED",
 	)
 	if !strings.Contains(row, applicationID) {
 		t.Fatalf("formatYarnRow() truncated application ID: %q", row)
 	}
 
-	idWidth, nameWidth, _, _, _, _ := emrYarnColumnWidths(128)
+	idWidth, nameWidth, _, _, _, _, _ := emrYarnColumnWidths(128)
 	if idWidth != 32 {
 		t.Fatalf("ID width = %d, want 32", idWidth)
 	}
@@ -69,7 +70,7 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 		t.Fatalf("Name width = %d, want at least 36", nameWidth)
 	}
 
-	_, wideNameWidth, _, _, _, _ := emrYarnColumnWidths(180)
+	_, wideNameWidth, _, _, _, _, _ := emrYarnColumnWidths(180)
 	if wideNameWidth <= nameWidth {
 		t.Fatalf("wide Name width = %d, want greater than %d", wideNameWidth, nameWidth)
 	}
@@ -133,5 +134,15 @@ func TestRefreshStatusIsScopedToCurrentPage(t *testing.T) {
 	m.startRefresh("steps")
 	if got := m.refreshStatusText(); got != "刷新中 " {
 		t.Fatalf("Steps refresh status = %q, want %q", got, "刷新中 ")
+	}
+}
+
+func TestStatusBlinkHasOnlyOnePendingTick(t *testing.T) {
+	m := model{}
+	if cmd := m.scheduleStatusBlink(); cmd == nil {
+		t.Fatal("first blink schedule returned nil")
+	}
+	if cmd := m.scheduleStatusBlink(); cmd != nil {
+		t.Fatal("second blink schedule created a duplicate timer")
 	}
 }

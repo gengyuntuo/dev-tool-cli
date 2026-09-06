@@ -202,17 +202,17 @@ func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5], widths[6]
 }
 
-func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
+func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
-	gapWidth := 10
-	availableWidth := max(innerWidth-gapWidth, 6)
-	widths := []int{16, 12, 8, 10, 10, 10}
+	gapWidth := 12
+	availableWidth := max(innerWidth-gapWidth, 7)
+	widths := []int{16, 12, 4, 8, 8, 8, 8}
 	minimumWidth := 0
 	for _, width := range widths {
 		minimumWidth += width
 	}
 	if availableWidth < minimumWidth {
-		widths = []int{8, 8, 3, 3, 3, 3}
+		widths = []int{8, 8, 3, 3, 3, 3, 3}
 	}
 
 	remaining := availableWidth
@@ -231,11 +231,12 @@ func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	grow(3, 19)
 	grow(4, 26)
 	grow(5, 12)
+	grow(6, 14)
 	if remaining > 0 {
 		widths[1] += remaining
 	}
 
-	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5]
+	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5], widths[6]
 }
 
 func loadEMRClusters() tea.Cmd {
@@ -561,7 +562,7 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 		"YARN Applications",
 		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.yarnPage+1, m.emrDetailYarnMaxPage()+1, len(m.emrDetail.yarnApps)),
 		boxTop(tableWidth),
-		boxRow(formatYarnRow(tableWidth, "ID", "Name", "State", "User", "Started At", "Elapsed"), tableWidth),
+		boxRow(formatYarnRow(tableWidth, "ID", "Name", "User", "Started At", "Elapsed", "State", "Final Status"), tableWidth),
 		boxSeparator(tableWidth),
 	}
 	if m.emrDetail.yarnLoading {
@@ -572,7 +573,16 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 		lines = append(lines, boxRow("No YARN applications found.", tableWidth))
 	} else {
 		for i, app := range m.emrDetail.yarnApps[appStart:appEnd] {
-			row := boxRow(formatYarnRow(tableWidth, app.ID, app.Name, renderYarnState(app.State, m.statusBlink), app.User, app.StartedAt, app.Elapsed), tableWidth)
+			row := boxRow(formatYarnRow(
+				tableWidth,
+				app.ID,
+				app.Name,
+				app.User,
+				app.StartedAt,
+				app.Elapsed,
+				renderYarnState(app.State, m.statusBlink),
+				renderYarnState(app.FinalStatus, m.statusBlink),
+			), tableWidth)
 			if appStart+i == m.emrDetail.yarnSelected {
 				row = selectedRowStyle(row, tableWidth)
 			}
@@ -883,8 +893,8 @@ func formatStepRow(tableWidth int, id, name, createdAt, startedAt, endedAt, elap
 	}, "  ")
 }
 
-func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed string) string {
-	idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth := emrYarnColumnWidths(tableWidth)
+func formatYarnRow(tableWidth int, id, name, user, startedAt, elapsed, state, finalStatus string) string {
+	idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth, finalStatusWidth := emrYarnColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
@@ -892,6 +902,7 @@ func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed str
 		formatCell(startedAt, startedAtWidth),
 		formatCellRight(elapsed, elapsedWidth),
 		formatCell(state, stateWidth),
+		formatCell(finalStatus, finalStatusWidth),
 	}, "  ")
 }
 
@@ -902,8 +913,8 @@ func renderYarnState(state string, blink bool) string {
 			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● RUNNING")
 		}
 		return "  RUNNING"
-	case "FINISHED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● FINISHED")
+	case "FINISHED", "SUCCEEDED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● " + state)
 	case "FAILED":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● FAILED")
 	case "KILLED":

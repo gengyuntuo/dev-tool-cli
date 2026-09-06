@@ -57,6 +57,7 @@ type model struct {
 	refreshStartedAt   time.Time
 	refreshStatus      string
 	statusBlink        bool
+	statusBlinkPending bool
 	remoteShareErr     string
 }
 
@@ -621,7 +622,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.finishRefresh("steps", nil)
 		if hasRunningStep(m.emrDetail.steps) {
-			return m, blinkRemoteStatus()
+			cmd := m.scheduleStatusBlink()
+			return m, cmd
 		}
 	case yarnAppsLoadedMsg:
 		m.emrDetail.yarnLoading = false
@@ -638,7 +640,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hasRunningYarnApplication(m.emrDetail.yarnApps) &&
 			!hasRunningStep(m.emrDetail.steps) &&
 			!m.hasActiveBlinkingRemoteShare() {
-			return m, blinkRemoteStatus()
+			cmd := m.scheduleStatusBlink()
+			return m, cmd
 		}
 	case sshKeysLoadedMsg:
 		if msg.err != nil {
@@ -716,11 +719,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.remoteLatency = formatLatency(msg.latency)
 		}
 	case blinkStatusMsg:
+		m.statusBlinkPending = false
 		m.statusBlink = !m.statusBlink
 		if m.hasActiveBlinkingRemoteShare() ||
 			(m.emrDetail.visible &&
 				(hasRunningStep(m.emrDetail.steps) || hasRunningYarnApplication(m.emrDetail.yarnApps))) {
-			return m, blinkRemoteStatus()
+			cmd := m.scheduleStatusBlink()
+			return m, cmd
 		}
 	}
 
@@ -1046,8 +1051,12 @@ func trimLastRune(value string) string {
 	return string(runes[:len(runes)-1])
 }
 
-func blinkRemoteStatus() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(time.Time) tea.Msg {
+func (m *model) scheduleStatusBlink() tea.Cmd {
+	if m.statusBlinkPending {
+		return nil
+	}
+	m.statusBlinkPending = true
+	return tea.Tick(750*time.Millisecond, func(time.Time) tea.Msg {
 		return blinkStatusMsg{}
 	})
 }

@@ -329,7 +329,8 @@ func (m model) confirmRemoteProxy() (tea.Model, tea.Cmd) {
 	m.remoteShareErr = ""
 	m.status = "Starting SSH dynamic proxy..."
 
-	return m, tea.Batch(startRemoteProxy(record.ID, username, password, false), blinkRemoteStatus())
+	blinkCmd := m.scheduleStatusBlink()
+	return m, tea.Batch(startRemoteProxy(record.ID, username, password, false), blinkCmd)
 }
 
 func (m model) renderRemoteProxyDialog(base string) string {
@@ -554,10 +555,12 @@ func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
 
 	if action == "connect" {
 		m.status = "Starting SSH connect tunnel..."
-		return m, tea.Batch(startRemoteConnect(record.ID, username, ip, port, keyPath, false), blinkRemoteStatus())
+		blinkCmd := m.scheduleStatusBlink()
+		return m, tea.Batch(startRemoteConnect(record.ID, username, ip, port, keyPath, false), blinkCmd)
 	}
 
-	return m, tea.Batch(startRemoteShare(record.ID, username, ip, port, keyPath, false), blinkRemoteStatus())
+	blinkCmd := m.scheduleStatusBlink()
+	return m, tea.Batch(startRemoteShare(record.ID, username, ip, port, keyPath, false), blinkCmd)
 }
 
 func (m model) renderRemoteDialog(base string) string {
@@ -769,7 +772,8 @@ func (m model) retrySelectedRemote() (tea.Model, tea.Cmd) {
 	m.updateRemoteRetryCountdown(record.ID, 0)
 	m.remoteShareLoading = true
 	m.status = "Retrying remote connection..."
-	return m, tea.Batch(startRemoteFromConfig(record.ID, config, true), blinkRemoteStatus())
+	blinkCmd := m.scheduleStatusBlink()
+	return m, tea.Batch(startRemoteFromConfig(record.ID, config, true), blinkCmd)
 }
 
 func startRemoteFromConfig(id int, config remoteConnectionConfig, manual bool) tea.Cmd {
