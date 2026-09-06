@@ -499,8 +499,9 @@ func (m model) View() string {
 	displayHeight := max(m.height-1-statusBarHeight, 0)
 
 	if m.emrDetail.visible {
+		detailHeight := max(m.height-statusBarHeight, 0)
 		view := strings.Join([]string{
-			m.renderEMRDetailPage(displayHeight),
+			m.renderEMRDetailPage(detailHeight),
 			m.renderStatusBar(),
 		}, "\n")
 		if m.emrItemDialog.visible {
@@ -586,6 +587,18 @@ func (m model) renderStatusBar() string {
 		Foreground(lipgloss.Color("230")).
 		Background(lipgloss.Color("238")).
 		Render(text)
+}
+
+func (m model) renderDialogPage(dialog string) string {
+	contentHeight := max(m.height-statusBarHeight, 0)
+	return strings.Join([]string{
+		lipgloss.Place(m.width, contentHeight, lipgloss.Center, lipgloss.Center, dialog),
+		m.renderStatusBar(),
+	}, "\n")
+}
+
+func (m model) dialogContentHeight() int {
+	return max(m.height-statusBarHeight, 0)
 }
 
 func menuIndexAt(x int) (int, bool) {

@@ -126,9 +126,11 @@ func (m model) updateRemoteDialog(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) updateRemoteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	boxWidth, boxHeight := remoteDialogSize(m.width, m.height)
+	dialog := m.remoteDialogView()
+	boxWidth := lipgloss.Width(dialog)
+	boxHeight := lipgloss.Height(dialog)
 	left := (m.width - boxWidth) / 2
-	top := (m.height - boxHeight) / 2
+	top := (m.dialogContentHeight() - boxHeight) / 2
 	x := msg.X - left
 	y := msg.Y - top
 	if x < 0 || y < 0 || x >= boxWidth || y >= boxHeight {
@@ -136,13 +138,13 @@ func (m model) updateRemoteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	switch y {
-	case 3:
-		m.remoteDialog.focus = 0
 	case 5:
-		m.remoteDialog.focus = 1
+		m.remoteDialog.focus = 0
 	case 7:
-		m.remoteDialog.focus = 2
+		m.remoteDialog.focus = 1
 	case 9:
+		m.remoteDialog.focus = 2
+	case 11:
 		m.remoteDialog.focus = 3
 	case boxHeight - 3:
 		if x < boxWidth/2 {
@@ -180,7 +182,7 @@ func (m model) updateRemoteDeleteDialogMouse(msg tea.MouseMsg) (tea.Model, tea.C
 	dialogWidth := lipgloss.Width(dialog)
 	dialogHeight := lipgloss.Height(dialog)
 	left := (m.width - dialogWidth) / 2
-	top := (m.height - dialogHeight) / 2
+	top := (m.dialogContentHeight() - dialogHeight) / 2
 	x := msg.X - left
 	y := msg.Y - top
 	if x < 0 || y < 0 || x >= dialogWidth || y >= dialogHeight {
@@ -232,7 +234,7 @@ func (m *model) deleteRemoteRecord(id int) {
 func (m model) renderRemoteDeleteDialog(base string) string {
 	_ = base
 
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, m.remoteDeleteDialogView())
+	return m.renderDialogPage(m.remoteDeleteDialogView())
 }
 
 func (m model) remoteDeleteDialogView() string {
@@ -336,6 +338,10 @@ func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
 func (m model) renderRemoteDialog(base string) string {
 	_ = base
 
+	return m.renderDialogPage(m.remoteDialogView())
+}
+
+func (m model) remoteDialogView() string {
 	boxWidth, _ := remoteDialogSize(m.width, m.height)
 	keyName := "No private key found"
 	if len(m.remoteDialog.keys) > 0 {
@@ -359,14 +365,12 @@ func (m model) renderRemoteDialog(base string) string {
 	}
 
 	buttons := m.dialogButton(4, "取消") + "    " + m.dialogButton(5, "确认")
-	content := lipgloss.NewStyle().
-		Width(boxWidth-4).
+	return lipgloss.NewStyle().
+		Width(boxWidth-6).
 		Padding(1, 2).
 		Border(lipgloss.RoundedBorder()).
 		BorderForeground(lipgloss.Color("62")).
 		Render(strings.Join(append(lines, "", buttons), "\n"))
-
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, content)
 }
 
 func (m model) dialogField(index int, value string) string {

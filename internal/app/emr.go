@@ -229,42 +229,23 @@ func (m model) renderEMRDetailPage(height int) string {
 	}
 
 	content := m.renderEMRDetailContent(tableWidth(m.width))
-	return lipgloss.NewStyle().
-		Width(m.width).
-		Height(height).
-		Padding(1, 2).
-		Render(content)
+	body := lipgloss.NewStyle().Padding(1, 2).Render(content)
+	return m.renderEMRDetailTabs(m.width) + "\n" +
+		lipgloss.Place(m.width, max(height-1, 0), lipgloss.Left, lipgloss.Top, body)
 }
 
 func (m model) renderEMRDetailContent(tableWidth int) string {
 	detail := m.emrDetail.detail
-	tabs := m.renderEMRDetailTabs(tableWidth)
 
 	switch m.emrDetail.activeTab {
 	case "overview":
-		return strings.Join([]string{
-			tabs,
-			"",
-			m.renderEMROverviewPanel(tableWidth, detail),
-		}, "\n")
+		return m.renderEMROverviewPanel(tableWidth, detail)
 	case "yarn":
-		return strings.Join([]string{
-			tabs,
-			"",
-			m.renderYarnDetailContent(tableWidth, detail),
-		}, "\n")
+		return m.renderYarnDetailContent(tableWidth, detail)
 	case "instances":
-		return strings.Join([]string{
-			tabs,
-			"",
-			m.renderEMRInstancesPanel(tableWidth, detail),
-		}, "\n")
+		return m.renderEMRInstancesPanel(tableWidth, detail)
 	default:
-		return strings.Join([]string{
-			tabs,
-			"",
-			m.renderEMRStepsPanel(tableWidth),
-		}, "\n")
+		return m.renderEMRStepsPanel(tableWidth)
 	}
 }
 
@@ -281,7 +262,7 @@ func (m model) renderEMRDetailTabs(tableWidth int) string {
 
 	items := make([]string, 0, len(sections))
 	for _, section := range sections {
-		style := lipgloss.NewStyle().Padding(0, 1).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("244"))
+		style := lipgloss.NewStyle().Padding(0, 1)
 		if m.emrDetail.activeTab == section.key {
 			style = style.Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true)
 		}
@@ -290,7 +271,9 @@ func (m model) renderEMRDetailTabs(tableWidth int) string {
 
 	return lipgloss.NewStyle().
 		Width(tableWidth).
-		Render(lipgloss.JoinHorizontal(lipgloss.Top, items...))
+		Foreground(lipgloss.Color("252")).
+		Background(lipgloss.Color("236")).
+		Render(strings.Join(items, ""))
 }
 
 func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetail) string {
@@ -448,7 +431,20 @@ func (m *model) openSelectedEMRItemDialog() bool {
 }
 
 func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
-	const firstDataRowY = 10
+	if msg.Y == 0 {
+		sections := []string{"overview", "steps", "yarn", "instances"}
+		if index, ok := emrDetailTabIndexAt(msg.X); ok {
+			m.emrDetail.activeTab = sections[index]
+			if m.emrDetail.activeTab == "yarn" && m.emrDetail.yarnApps == nil && !m.emrDetail.yarnLoading {
+				m.emrDetail.yarnLoading = true
+				m.emrDetail.yarnErr = ""
+				return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
+			}
+		}
+		return m, nil
+	}
+
+	const firstDataRowY = 7
 
 	if msg.X < 2 || msg.X >= 2+tableWidth(m.width) || msg.Y < firstDataRowY {
 		return m, nil
@@ -483,11 +479,25 @@ func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func emrDetailTabIndexAt(x int) (int, bool) {
+	labels := []string{"Overview", "Steps", "YARN", "Instances"}
+	offset := 0
+	for i, label := range labels {
+		width := lipgloss.Width(label) + 2
+		if x >= offset && x < offset+width {
+			return i, true
+		}
+		offset += width
+	}
+
+	return 0, false
+}
+
 func (m model) renderEMRItemDialog(base string) string {
 	_ = base
 
 	dialog := m.emrItemDialogView()
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, dialog)
+	return m.renderDialogPage(dialog)
 }
 
 func (m model) emrItemDialogView() string {
@@ -546,7 +556,7 @@ func (m model) updateEMRItemDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	dialogWidth := lipgloss.Width(dialog)
 	dialogHeight := lipgloss.Height(dialog)
 	left := (m.width - dialogWidth) / 2
-	top := (m.height - dialogHeight) / 2
+	top := (m.dialogContentHeight() - dialogHeight) / 2
 
 	if msg.X >= left && msg.X < left+dialogWidth && msg.Y == top+dialogHeight-3 {
 		m.emrItemDialog.visible = false
