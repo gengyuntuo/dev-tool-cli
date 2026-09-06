@@ -21,6 +21,8 @@ const (
 	sshDialTimeout     = 60 * time.Second
 	forwardDialTimeout = 10 * time.Second
 	reconnectInterval  = 10 * time.Second
+	keepaliveInterval  = 10 * time.Second
+	keepaliveTimeout   = 10 * time.Second
 )
 
 type RemoteForward struct {
@@ -370,11 +372,7 @@ func startRemoteForwardOnce(ctx context.Context, user string, sshAddr string, ke
 		return nil, nil, err
 	}
 
-	go func() {
-		if err := client.Wait(); err != nil && ctx.Err() == nil {
-			notifyForwardDone(ctx, done, fmt.Errorf("ssh connection interrupted: %w", err))
-		}
-	}()
+	monitorSSHConnection(ctx, client, done)
 
 	go func() {
 		<-ctx.Done()
@@ -403,14 +401,7 @@ func startLocalForwardGroupOnce(ctx context.Context, user string, sshAddr string
 		return nil, nil, err
 	}
 
-	go func() {
-		if err := client.Wait(); err != nil && ctx.Err() == nil {
-			select {
-			case done <- fmt.Errorf("ssh connection interrupted: %w", err):
-			default:
-			}
-		}
-	}()
+	monitorSSHConnection(ctx, client, done)
 
 	listeners := make([]net.Listener, 0, len(forwards)+1)
 	for _, forward := range forwards {
@@ -452,11 +443,7 @@ func startPasswordDynamicForwardOnce(ctx context.Context, user string, sshAddr s
 		return nil, nil, err
 	}
 
-	go func() {
-		if err := client.Wait(); err != nil && ctx.Err() == nil {
-			notifyForwardDone(ctx, done, fmt.Errorf("ssh connection interrupted: %w", err))
-		}
-	}()
+	monitorSSHConnection(ctx, client, done)
 
 	listener, err := net.Listen("tcp", socksAddr)
 	if err != nil {
@@ -610,6 +597,55 @@ func notifyForwardDone(ctx context.Context, done chan<- error, err error) {
 	case done <- err:
 	default:
 	}
+}
+
+func monitorSSHConnection(ctx context.Context, client *ssh.Client, done chan<- error) {
+	go func() {
+		if err := client.Wait(); err != nil && ctx.Err() == nil {
+			notifyForwardDone(ctx, done, fmt.Errorf("ssh connection interrupted: %w", err))
+		}
+	}()
+
+	go func() {
+		ticker := time.NewTicker(keepaliveInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+			}
+
+			result := make(chan error, 1)
+			go func() {
+				_, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+				result <- err
+			}()
+
+			timer := time.NewTimer(keepaliveTimeout)
+			select {
+			case <-ctx.Done():
+				if !timer.Stop() {
+					<-timer.C
+				}
+				return
+			case err := <-result:
+				if !timer.Stop() {
+					<-timer.C
+				}
+				if err != nil {
+					notifyForwardDone(ctx, done, fmt.Errorf("ssh keepalive failed: %w", err))
+					_ = client.Close()
+					return
+				}
+			case <-timer.C:
+				notifyForwardDone(ctx, done, fmt.Errorf("ssh keepalive timed out after %s", keepaliveTimeout))
+				_ = client.Close()
+				return
+			}
+		}
+	}()
 }
 
 func emitForwardEvent(events chan<- ForwardEvent, status ForwardStatus, err error) {
