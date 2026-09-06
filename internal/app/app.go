@@ -858,17 +858,49 @@ func selectedRowStyle(row string, width int) string {
 		Render(row)
 }
 
-func formatShareRow(action, endpoint, key, remote, local, startedAt, status string) string {
-	return fmt.Sprintf(
-		"%-8s  %-40s  %-18s  %-18s  %-16s  %-19s  %s",
-		truncate(action, 8),
-		truncate(endpoint, 40),
-		truncate(key, 18),
-		truncate(remote, 18),
-		truncate(local, 16),
-		truncate(startedAt, 19),
-		status,
-	)
+func formatShareRow(tableWidth int, action, endpoint, key, remote, local, startedAt, status string) string {
+	if tableWidth < 90 {
+		actionWidth := min(8, max(tableWidth/5, 4))
+		statusWidth := min(20, max(tableWidth/3, 10))
+		endpointWidth := max(tableWidth-actionWidth-statusWidth-4, 1)
+		return strings.Join([]string{
+			formatCell(action, actionWidth),
+			formatCell(endpoint, endpointWidth),
+			formatCell(status, statusWidth),
+		}, "  ")
+	}
+
+	if tableWidth < 125 {
+		actionWidth := 8
+		localWidth := 18
+		startedAtWidth := 19
+		statusWidth := 20
+		endpointWidth := max(tableWidth-actionWidth-localWidth-startedAtWidth-statusWidth-8, 12)
+		return strings.Join([]string{
+			formatCell(action, actionWidth),
+			formatCell(endpoint, endpointWidth),
+			formatCell(local, localWidth),
+			formatCell(startedAt, startedAtWidth),
+			formatCell(status, statusWidth),
+		}, "  ")
+	}
+
+	actionWidth := 8
+	keyWidth := 12
+	remoteWidth := 16
+	localWidth := 18
+	startedAtWidth := 19
+	statusWidth := 20
+	endpointWidth := max(tableWidth-actionWidth-keyWidth-remoteWidth-localWidth-startedAtWidth-statusWidth-12, 20)
+	return strings.Join([]string{
+		formatCell(action, actionWidth),
+		formatCell(endpoint, endpointWidth),
+		formatCell(key, keyWidth),
+		formatCell(remote, remoteWidth),
+		formatCell(local, localWidth),
+		formatCell(startedAt, startedAtWidth),
+		formatCell(status, statusWidth),
+	}, "  ")
 }
 
 func remoteDialogTitle(action string) string {

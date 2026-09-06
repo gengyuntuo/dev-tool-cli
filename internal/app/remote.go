@@ -32,14 +32,16 @@ func (m model) renderRemoteDisplay(height int) string {
 		totalPages := m.remoteMaxPage() + 1
 		start := m.remotePage * remotePageSize
 		end := min(start+remotePageSize, len(m.remoteShareRecords))
+		tableWidth := remoteTableWidth(m.width)
 		lines = append(lines,
 			fmt.Sprintf("Page %d/%d  Total %d", m.remotePage+1, totalPages, len(m.remoteShareRecords)),
 			"",
-			formatShareRow("Action", "Endpoint", "Key", "Remote", "Local", "Started At", "Status"),
-			strings.Repeat("-", min(m.width, 150)),
+			formatShareRow(tableWidth, "Action", "Endpoint", "Key", "Remote", "Local", "Started At", "Status"),
+			strings.Repeat("-", tableWidth),
 		)
 		for i, record := range m.remoteShareRecords[start:end] {
 			row := formatShareRow(
+				tableWidth,
 				record.Action,
 				record.User+"@"+net.JoinHostPort(record.Host, record.Port),
 				record.Key,
@@ -49,11 +51,11 @@ func (m model) renderRemoteDisplay(height int) string {
 				renderShareStatus(record, m.statusBlink),
 			)
 			if start+i == m.remoteSelected {
-				row = selectedRowStyle(row, max(lipgloss.Width(row), min(m.width, 150)))
+				row = selectedRowStyle(row, tableWidth)
 			}
 			lines = append(lines, row)
 		}
-		lines = append(lines, strings.Repeat("-", min(m.width, 150)))
+		lines = append(lines, strings.Repeat("-", tableWidth))
 	}
 
 	content := lipgloss.NewStyle().
@@ -61,6 +63,10 @@ func (m model) renderRemoteDisplay(height int) string {
 		Render(strings.Join(lines, "\n"))
 
 	return lipgloss.Place(m.width, height, lipgloss.Left, lipgloss.Top, content)
+}
+
+func remoteTableWidth(screenWidth int) int {
+	return max(min(screenWidth-4, 150), 20)
 }
 
 func (m model) remoteMaxPage() int {
