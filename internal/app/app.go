@@ -51,6 +51,8 @@ type model struct {
 	remoteShareSeq     int
 	remotePage         int
 	remoteSelected     int
+	remoteLatency      string
+	remoteLatencyID    int
 	statusBlink        bool
 	remoteShareErr     string
 }
@@ -175,12 +177,20 @@ type remoteForwardEventMsg struct {
 
 type blinkStatusMsg struct{}
 
+type remoteLatencyTickMsg struct{}
+
+type remoteLatencyMeasuredMsg struct {
+	id      int
+	latency time.Duration
+	err     error
+}
+
 func NewModel() tea.Model {
 	return model{emrMouseSelected: -1}
 }
 
 func (m model) Init() tea.Cmd {
-	return nil
+	return remoteLatencyTick()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -601,6 +611,26 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if forward := m.remoteForwards[msg.id]; forward != nil {
 			return m, waitRemoteForwardEvent(msg.id, forward)
 		}
+	case remoteLatencyTickMsg:
+		nextTick := remoteLatencyTick()
+		if m.activeMenu != remoteMenuIndex || m.emrDetail.visible || len(m.remoteShareRecords) == 0 {
+			return m, nextTick
+		}
+		record := m.remoteShareRecords[m.remoteSelected]
+		return m, tea.Batch(nextTick, measureRemoteLatency(record))
+	case remoteLatencyMeasuredMsg:
+		if m.activeMenu != remoteMenuIndex || m.emrDetail.visible || len(m.remoteShareRecords) == 0 {
+			break
+		}
+		if m.remoteShareRecords[m.remoteSelected].ID != msg.id {
+			break
+		}
+		m.remoteLatencyID = msg.id
+		if msg.err != nil {
+			m.remoteLatency = "不可达"
+		} else {
+			m.remoteLatency = formatLatency(msg.latency)
+		}
 	case blinkStatusMsg:
 		m.statusBlink = !m.statusBlink
 		if m.hasActiveBlinkingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.steps)) {
@@ -719,6 +749,20 @@ func (m model) renderStatusBar() string {
 	}
 	if m.emrItemDialog.visible {
 		text = " ↑/↓ 滚动  PgUp/PgDn 翻页  返回<Esc>  q 退出"
+	}
+
+	right := ""
+	if m.activeMenu == remoteMenuIndex && !m.emrDetail.visible && len(m.remoteShareRecords) > 0 {
+		latency := "--"
+		if m.remoteLatencyID == m.remoteShareRecords[m.remoteSelected].ID && m.remoteLatency != "" {
+			latency = m.remoteLatency
+		}
+		right = "延迟: " + latency + " "
+	}
+	if right != "" {
+		leftWidth := max(m.width-lipgloss.Width(right), 0)
+		text = ansi.Truncate(text, leftWidth, "")
+		text = padRight(text, leftWidth) + right
 	}
 
 	return lipgloss.NewStyle().

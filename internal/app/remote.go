@@ -73,6 +73,36 @@ func (m model) remoteMaxPage() int {
 	return (len(m.remoteShareRecords) - 1) / remotePageSize
 }
 
+func remoteLatencyTick() tea.Cmd {
+	return tea.Tick(5*time.Second, func(time.Time) tea.Msg {
+		return remoteLatencyTickMsg{}
+	})
+}
+
+func measureRemoteLatency(record remoteShareRecord) tea.Cmd {
+	return func() tea.Msg {
+		address := net.JoinHostPort(record.Host, record.Port)
+		startedAt := time.Now()
+		conn, err := net.DialTimeout("tcp", address, 3*time.Second)
+		latency := time.Since(startedAt)
+		if err == nil {
+			_ = conn.Close()
+		}
+		return remoteLatencyMeasuredMsg{
+			id:      record.ID,
+			latency: latency,
+			err:     err,
+		}
+	}
+}
+
+func formatLatency(latency time.Duration) string {
+	if latency < time.Millisecond {
+		return fmt.Sprintf("%.2fms", float64(latency.Microseconds())/1000)
+	}
+	return fmt.Sprintf("%.1fms", float64(latency.Microseconds())/1000)
+}
+
 func (m model) remoteRowIndexAtMouse(y int) (int, bool) {
 	if len(m.remoteShareRecords) == 0 {
 		return 0, false
