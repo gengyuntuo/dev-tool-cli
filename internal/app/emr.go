@@ -206,34 +206,29 @@ func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	gapWidth := 12
 	availableWidth := max(innerWidth-gapWidth, 7)
-	widths := []int{16, 12, 4, 8, 8, 8, 8}
-	minimumWidth := 0
+	widths := []int{32, 36, 10, 19, 20, 12, 12}
+	totalWidth := 0
 	for _, width := range widths {
-		minimumWidth += width
+		totalWidth += width
 	}
-	if availableWidth < minimumWidth {
-		widths = []int{8, 8, 3, 3, 3, 3, 3}
+	shrink := func(index, minimum int) {
+		if totalWidth <= availableWidth {
+			return
+		}
+		reduction := min(widths[index]-minimum, totalWidth-availableWidth)
+		widths[index] -= reduction
+		totalWidth -= reduction
 	}
 
-	remaining := availableWidth
-	for _, width := range widths {
-		remaining -= width
+	shrink(1, 4)
+	shrink(2, 4)
+	shrink(3, 8)
+	shrink(0, 8)
+	for _, index := range []int{1, 2, 3, 0, 4} {
+		shrink(index, 0)
 	}
-	grow := func(index, target int) {
-		increase := min(max(target-widths[index], 0), max(remaining, 0))
-		widths[index] += increase
-		remaining -= increase
-	}
-
-	grow(0, 32)
-	grow(1, 36)
-	grow(2, 12)
-	grow(3, 19)
-	grow(4, 26)
-	grow(5, 12)
-	grow(6, 14)
-	if remaining > 0 {
-		widths[1] += remaining
+	if totalWidth < availableWidth {
+		widths[1] += availableWidth - totalWidth
 	}
 
 	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5], widths[6]
@@ -581,7 +576,7 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 				app.StartedAt,
 				app.Elapsed,
 				renderYarnState(app.State, m.statusBlink),
-				renderYarnState(app.FinalStatus, m.statusBlink),
+				renderYarnFinalStatus(app.FinalStatus),
 			), tableWidth)
 			if appStart+i == m.emrDetail.yarnSelected {
 				row = selectedRowStyle(row, tableWidth)
@@ -907,23 +902,31 @@ func formatYarnRow(tableWidth int, id, name, user, startedAt, elapsed, state, fi
 }
 
 func renderYarnState(state string, blink bool) string {
-	switch state {
-	case "RUNNING":
-		if blink {
-			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● RUNNING")
-		}
+	if state == "RUNNING" && !blink {
 		return "  RUNNING"
-	case "FINISHED", "SUCCEEDED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● " + state)
-	case "FAILED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● FAILED")
-	case "KILLED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● KILLED")
-	case "ACCEPTED", "NEW":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("● " + state)
-	default:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("● " + state)
 	}
+	return yarnStatusStyle(state).Render("● " + state)
+}
+
+func renderYarnFinalStatus(status string) string {
+	return yarnStatusStyle(status).Render(status)
+}
+
+func yarnStatusStyle(status string) lipgloss.Style {
+	color := lipgloss.Color("252")
+	switch status {
+	case "RUNNING":
+		color = lipgloss.Color("220")
+	case "FINISHED", "SUCCEEDED":
+		color = lipgloss.Color("42")
+	case "FAILED":
+		color = lipgloss.Color("196")
+	case "KILLED":
+		color = lipgloss.Color("245")
+	case "ACCEPTED", "NEW":
+		color = lipgloss.Color("39")
+	}
+	return lipgloss.NewStyle().Foreground(color)
 }
 
 func tableWidth(screenWidth int) int {

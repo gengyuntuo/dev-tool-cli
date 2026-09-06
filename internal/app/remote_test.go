@@ -61,13 +61,19 @@ func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
 	if !strings.Contains(row, applicationID) {
 		t.Fatalf("formatYarnRow() truncated application ID: %q", row)
 	}
+	if !strings.Contains(row, "UNDEFINED") {
+		t.Fatalf("formatYarnRow() truncated final status: %q", row)
+	}
 
-	idWidth, nameWidth, _, _, _, _, _ := emrYarnColumnWidths(128)
+	idWidth, nameWidth, _, startedAtWidth, elapsedWidth, stateWidth, finalStatusWidth := emrYarnColumnWidths(128)
 	if idWidth != 32 {
 		t.Fatalf("ID width = %d, want 32", idWidth)
 	}
-	if nameWidth < 36 {
-		t.Fatalf("Name width = %d, want at least 36", nameWidth)
+	if startedAtWidth != 19 || elapsedWidth != 20 {
+		t.Fatalf("time widths = (%d, %d), want (19, 20)", startedAtWidth, elapsedWidth)
+	}
+	if stateWidth != 12 || finalStatusWidth != 12 {
+		t.Fatalf("status widths = (%d, %d), want (12, 12)", stateWidth, finalStatusWidth)
 	}
 
 	_, wideNameWidth, _, _, _, _, _ := emrYarnColumnWidths(180)
@@ -144,5 +150,15 @@ func TestStatusBlinkHasOnlyOnePendingTick(t *testing.T) {
 	}
 	if cmd := m.scheduleStatusBlink(); cmd != nil {
 		t.Fatal("second blink schedule created a duplicate timer")
+	}
+}
+
+func TestYarnFinalStatusHasNoIndicator(t *testing.T) {
+	got := renderYarnFinalStatus("SUCCEEDED")
+	if strings.Contains(got, "●") {
+		t.Fatalf("final status contains an indicator: %q", got)
+	}
+	if !strings.Contains(got, "SUCCEEDED") {
+		t.Fatalf("final status omitted status text: %q", got)
 	}
 }
