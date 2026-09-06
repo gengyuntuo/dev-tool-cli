@@ -35,15 +35,13 @@ func (m model) renderRemoteDisplay(height int) string {
 		lines = append(lines,
 			fmt.Sprintf("Page %d/%d  Total %d", m.remotePage+1, totalPages, len(m.remoteShareRecords)),
 			"",
-			formatShareRow("Action", "User", "Host", "Port", "Key", "Remote", "Local", "Started At", "Status"),
+			formatShareRow("Action", "Endpoint", "Key", "Remote", "Local", "Started At", "Status"),
 			strings.Repeat("-", min(m.width, 150)),
 		)
 		for i, record := range m.remoteShareRecords[start:end] {
 			row := formatShareRow(
 				record.Action,
-				record.User,
-				record.Host,
-				record.Port,
+				record.User+"@"+net.JoinHostPort(record.Host, record.Port),
 				record.Key,
 				record.Remote,
 				record.Local,

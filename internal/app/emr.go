@@ -78,8 +78,8 @@ func formatClusterRow(tableWidth int, id, name, state, createdAt string) string 
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
-		formatCell(state, stateWidth),
 		formatCell(createdAt, createdAtWidth),
+		formatCell(state, stateWidth),
 	}, "  ")
 }
 

@@ -858,13 +858,11 @@ func selectedRowStyle(row string, width int) string {
 		Render(row)
 }
 
-func formatShareRow(action, userName, host, port, key, remote, local, startedAt, status string) string {
+func formatShareRow(action, endpoint, key, remote, local, startedAt, status string) string {
 	return fmt.Sprintf(
-		"%-8s  %-12s  %-18s  %-6s  %-18s  %-18s  %-16s  %-19s  %s",
+		"%-8s  %-40s  %-18s  %-18s  %-16s  %-19s  %s",
 		truncate(action, 8),
-		truncate(userName, 12),
-		truncate(host, 18),
-		truncate(port, 6),
+		truncate(endpoint, 40),
 		truncate(key, 18),
 		truncate(remote, 18),
 		truncate(local, 16),
