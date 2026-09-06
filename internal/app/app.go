@@ -15,7 +15,6 @@ import (
 )
 
 const statusBarHeight = 1
-const emrDetailStepPageSize = 10
 const emrMenuIndex = 0
 const remoteMenuIndex = 1
 const remoteSharePort = "20022"
@@ -241,6 +240,34 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.openSelectedEMRItemDialog() {
 					return m, nil
 				}
+			case "r":
+				switch m.emrDetail.activeTab {
+				case "steps":
+					if m.emrDetail.stepLoading {
+						return m, nil
+					}
+					m.emrDetail.steps = nil
+					m.emrDetail.stepMarker = ""
+					m.emrDetail.stepPage = 0
+					m.emrDetail.stepSelected = 0
+					m.emrDetail.stepLoading = true
+					m.emrDetail.stepErr = ""
+					m.status = "Refreshing EMR steps..."
+					return m, loadEMRSteps(m.emrDetail.detail.ID, "")
+				case "yarn":
+					if m.emrDetail.yarnLoading {
+						return m, nil
+					}
+					m.emrDetail.yarnApps = nil
+					m.emrDetail.yarnPage = 0
+					m.emrDetail.yarnSelected = 0
+					m.emrDetail.yarnLoading = true
+					m.emrDetail.yarnErr = ""
+					m.status = "Refreshing YARN applications..."
+					return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
+				default:
+					return m, nil
+				}
 			case "tab":
 				sections := []string{"overview", "steps", "yarn", "instances"}
 				current := 0
@@ -261,11 +288,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.emrDetail.activeTab == "yarn" {
 					if m.emrDetail.yarnPage > 0 {
 						m.emrDetail.yarnPage--
-						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
+						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * m.emrDetailPageSize()
 					}
 				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepPage > 0 {
 					m.emrDetail.stepPage--
-					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+					m.emrDetail.stepSelected = m.emrDetail.stepPage * m.emrDetailPageSize()
 				} else if m.emrDetail.activeTab == "overview" {
 					m.emrDetail.overviewScroll = max(m.emrDetail.overviewScroll-m.emrOverviewVisibleLines(), 0)
 				}
@@ -274,12 +301,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.emrDetail.activeTab == "yarn" {
 					if m.emrDetail.yarnPage < m.emrDetailYarnMaxPage() {
 						m.emrDetail.yarnPage++
-						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
+						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * m.emrDetailPageSize()
 					}
 				} else if m.emrDetail.activeTab == "steps" {
 					if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
 						m.emrDetail.stepPage++
-						m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+						m.emrDetail.stepSelected = m.emrDetail.stepPage * m.emrDetailPageSize()
 					} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
 						m.emrDetail.stepLoading = true
 						m.emrDetail.stepErr = ""
@@ -296,11 +323,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.emrDetail.activeTab == "yarn" {
 					if m.emrDetail.yarnSelected > 0 {
 						m.emrDetail.yarnSelected--
-						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
+						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / m.emrDetailPageSize()
 					}
 				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepSelected > 0 {
 					m.emrDetail.stepSelected--
-					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+					m.emrDetail.stepPage = m.emrDetail.stepSelected / m.emrDetailPageSize()
 				} else if m.emrDetail.activeTab == "overview" && m.emrDetail.overviewScroll > 0 {
 					m.emrDetail.overviewScroll--
 				}
@@ -309,12 +336,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.emrDetail.activeTab == "yarn" {
 					if m.emrDetail.yarnSelected < len(m.emrDetail.yarnApps)-1 {
 						m.emrDetail.yarnSelected++
-						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
+						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / m.emrDetailPageSize()
 					}
 				} else if m.emrDetail.activeTab == "steps" {
 					if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
 						m.emrDetail.stepSelected++
-						m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+						m.emrDetail.stepPage = m.emrDetail.stepSelected / m.emrDetailPageSize()
 					} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
 						m.emrDetail.stepLoading = true
 						m.emrDetail.stepErr = ""
@@ -495,6 +522,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		pageSize := m.emrDetailPageSize()
+		m.emrDetail.stepPage = m.emrDetail.stepSelected / pageSize
+		m.emrDetail.yarnPage = m.emrDetail.yarnSelected / pageSize
 	case emrClustersLoadedMsg:
 		m.emrLoading = false
 		if msg.err != nil {
@@ -739,6 +769,9 @@ func (m model) renderStatusBar() string {
 	}
 	if m.emrDetail.visible {
 		text = " Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
+		if m.emrDetail.activeTab == "steps" || m.emrDetail.activeTab == "yarn" {
+			text = " r 刷新  Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
+		}
 		if m.emrDetail.activeTab == "overview" {
 			text = fmt.Sprintf(
 				" Tab 切换 section  ↑/↓/滚轮 滚动  p/n 翻页  位置 %d/%d  Esc 返回  q 退出",

@@ -163,16 +163,16 @@ func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 
 func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
-	gapWidth := 12
-	idWidth := 18
+	gapWidth := 10
+	idWidth := 32
 	userWidth := 12
-	startedAtWidth := 17
+	startedAtWidth := 19
 	elapsedWidth := 16
 	stateWidth := 12
 	nameWidth := innerWidth - gapWidth - idWidth - userWidth - startedAtWidth - elapsedWidth - stateWidth
-	if nameWidth < 18 {
-		nameWidth = 18
-		idWidth = max(innerWidth-gapWidth-nameWidth-userWidth-startedAtWidth-elapsedWidth-stateWidth, 12)
+	if nameWidth < 12 {
+		nameWidth = 12
+		idWidth = max(innerWidth-gapWidth-nameWidth-userWidth-startedAtWidth-elapsedWidth-stateWidth, 16)
 	}
 
 	return idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth
@@ -414,8 +414,9 @@ func (m model) renderEMRInstancesPanel(tableWidth int, detail appemr.ClusterDeta
 
 func (m model) renderEMRStepsPanel(tableWidth int) string {
 	detail := m.emrDetail.detail
-	stepStart := m.emrDetail.stepPage * emrDetailStepPageSize
-	stepEnd := min(stepStart+emrDetailStepPageSize, len(m.emrDetail.steps))
+	pageSize := m.emrDetailPageSize()
+	stepStart := m.emrDetail.stepPage * pageSize
+	stepEnd := min(stepStart+pageSize, len(m.emrDetail.steps))
 	totalStepPages := m.emrDetailMaxStepPage() + 1
 	if m.emrDetail.stepMarker != "" {
 		totalStepPagesLabel := fmt.Sprintf("%d+", totalStepPages)
@@ -473,8 +474,9 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 }
 
 func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDetail) string {
-	appStart := m.emrDetail.yarnPage * emrDetailStepPageSize
-	appEnd := min(appStart+emrDetailStepPageSize, len(m.emrDetail.yarnApps))
+	pageSize := m.emrDetailPageSize()
+	appStart := m.emrDetail.yarnPage * pageSize
+	appEnd := min(appStart+pageSize, len(m.emrDetail.yarnApps))
 	lines := []string{
 		"YARN Applications",
 		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.yarnPage+1, m.emrDetailYarnMaxPage()+1, len(m.emrDetail.yarnApps)),
@@ -550,11 +552,13 @@ func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	rowOffset := msg.Y - firstDataRowY
+	pageSize := m.emrDetailPageSize()
 	switch m.emrDetail.activeTab {
 	case "steps":
-		index := m.emrDetail.stepPage*emrDetailStepPageSize + rowOffset
-		pageEnd := min((m.emrDetail.stepPage+1)*emrDetailStepPageSize, len(m.emrDetail.steps))
-		if index < m.emrDetail.stepPage*emrDetailStepPageSize || index >= pageEnd {
+		pageStart := m.emrDetail.stepPage * pageSize
+		index := pageStart + rowOffset
+		pageEnd := min(pageStart+pageSize, len(m.emrDetail.steps))
+		if index < pageStart || index >= pageEnd {
 			return m, nil
 		}
 		if index == m.emrDetail.stepSelected {
@@ -563,9 +567,10 @@ func (m model) updateEMRDetailMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.emrDetail.stepSelected = index
 		}
 	case "yarn":
-		index := m.emrDetail.yarnPage*emrDetailStepPageSize + rowOffset
-		pageEnd := min((m.emrDetail.yarnPage+1)*emrDetailStepPageSize, len(m.emrDetail.yarnApps))
-		if index < m.emrDetail.yarnPage*emrDetailStepPageSize || index >= pageEnd {
+		pageStart := m.emrDetail.yarnPage * pageSize
+		index := pageStart + rowOffset
+		pageEnd := min(pageStart+pageSize, len(m.emrDetail.yarnApps))
+		if index < pageStart || index >= pageEnd {
 			return m, nil
 		}
 		if index == m.emrDetail.yarnSelected {
@@ -862,7 +867,7 @@ func (m model) emrDetailMaxStepPage() int {
 		return 0
 	}
 
-	return (len(m.emrDetail.steps) - 1) / emrDetailStepPageSize
+	return (len(m.emrDetail.steps) - 1) / m.emrDetailPageSize()
 }
 
 func (m model) emrDetailYarnMaxPage() int {
@@ -870,7 +875,11 @@ func (m model) emrDetailYarnMaxPage() int {
 		return 0
 	}
 
-	return (len(m.emrDetail.yarnApps) - 1) / emrDetailStepPageSize
+	return (len(m.emrDetail.yarnApps) - 1) / m.emrDetailPageSize()
+}
+
+func (m model) emrDetailPageSize() int {
+	return max(m.height-10, 1)
 }
 
 func hasRunningStep(steps []appemr.Step) bool {

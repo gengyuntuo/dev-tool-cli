@@ -45,3 +45,37 @@ func TestFormatShareRowAdaptsToWidth(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatYarnRowPreservesApplicationID(t *testing.T) {
+	const applicationID = "application_1725623456789_0123"
+	row := formatYarnRow(
+		128,
+		applicationID,
+		"daily-data-processing",
+		"RUNNING",
+		"hadoop",
+		"2026-09-06 15:00:00",
+		"1时2分3秒",
+	)
+	if !strings.Contains(row, applicationID) {
+		t.Fatalf("formatYarnRow() truncated application ID: %q", row)
+	}
+}
+
+func TestEMRDetailPageSizeUsesAvailableHeight(t *testing.T) {
+	tests := []struct {
+		height int
+		want   int
+	}{
+		{height: 40, want: 30},
+		{height: 24, want: 14},
+		{height: 10, want: 1},
+	}
+
+	for _, tt := range tests {
+		m := model{height: tt.height}
+		if got := m.emrDetailPageSize(); got != tt.want {
+			t.Fatalf("height %d: emrDetailPageSize() = %d, want %d", tt.height, got, tt.want)
+		}
+	}
+}
