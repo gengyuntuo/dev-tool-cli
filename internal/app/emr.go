@@ -487,7 +487,7 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 	pageSize := m.emrDetailPageSize()
 	stepStart := m.emrDetail.stepPage * pageSize
 	stepEnd := min(stepStart+pageSize, len(m.emrDetail.steps))
-	totalStepPages := m.emrDetailMaxStepPage() + 1
+	totalStepPages := max(m.emrDetailMaxStepPage()+1, m.emrDetail.stepPage+1)
 	if m.emrDetail.stepMarker != "" {
 		totalStepPagesLabel := fmt.Sprintf("%d+", totalStepPages)
 		lines := []string{
@@ -497,12 +497,14 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 			boxRow(formatStepRow(tableWidth, "ID", "Name", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
 			boxSeparator(tableWidth),
 		}
-		if m.emrDetail.stepLoading {
-			lines = append(lines, boxRow("Loading more steps...", tableWidth))
-		} else if m.emrDetail.stepErr != "" {
+		if m.emrDetail.stepErr != "" {
 			lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
 		} else if len(m.emrDetail.steps) == 0 {
-			lines = append(lines, boxRow("No steps found.", tableWidth))
+			message := "No steps found."
+			if m.emrDetail.stepLoading {
+				message = "Loading steps..."
+			}
+			lines = append(lines, boxRow(message, tableWidth))
 		} else {
 			for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
 				row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, step.CreatedAt, step.StartedAt, step.EndedAt, step.Elapsed, renderStepState(step.State, m.statusBlink)), tableWidth)
@@ -510,6 +512,9 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 					row = selectedRowStyle(row, tableWidth)
 				}
 				lines = append(lines, row)
+			}
+			if m.emrDetail.stepLoading {
+				lines = append(lines, boxRow("Loading more steps...", tableWidth))
 			}
 		}
 		lines = append(lines, boxBottom(tableWidth))
@@ -523,12 +528,14 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 		boxRow(formatStepRow(tableWidth, "ID", "Name", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
 		boxSeparator(tableWidth),
 	}
-	if m.emrDetail.stepLoading {
-		lines = append(lines, boxRow("Loading steps...", tableWidth))
-	} else if m.emrDetail.stepErr != "" {
+	if m.emrDetail.stepErr != "" {
 		lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
 	} else if len(m.emrDetail.steps) == 0 {
-		lines = append(lines, boxRow("No steps found.", tableWidth))
+		message := "No steps found."
+		if m.emrDetail.stepLoading {
+			message = "Loading steps..."
+		}
+		lines = append(lines, boxRow(message, tableWidth))
 	} else {
 		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
 			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, step.CreatedAt, step.StartedAt, step.EndedAt, step.Elapsed, renderStepState(step.State, m.statusBlink)), tableWidth)
@@ -536,6 +543,9 @@ func (m model) renderEMRStepsPanel(tableWidth int) string {
 				row = selectedRowStyle(row, tableWidth)
 			}
 			lines = append(lines, row)
+		}
+		if m.emrDetail.stepLoading {
+			lines = append(lines, boxRow("Loading more steps...", tableWidth))
 		}
 	}
 	lines = append(lines, boxBottom(tableWidth))
@@ -562,7 +572,7 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 		lines = append(lines, boxRow("No YARN applications found.", tableWidth))
 	} else {
 		for i, app := range m.emrDetail.yarnApps[appStart:appEnd] {
-			row := boxRow(formatYarnRow(tableWidth, app.ID, app.Name, app.State, app.User, app.StartedAt, app.Elapsed), tableWidth)
+			row := boxRow(formatYarnRow(tableWidth, app.ID, app.Name, renderYarnState(app.State, m.statusBlink), app.User, app.StartedAt, app.Elapsed), tableWidth)
 			if appStart+i == m.emrDetail.yarnSelected {
 				row = selectedRowStyle(row, tableWidth)
 			}
@@ -881,22 +891,25 @@ func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed str
 		formatCell(user, userWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCellRight(elapsed, elapsedWidth),
-		formatCell(renderYarnState(state), stateWidth),
+		formatCell(state, stateWidth),
 	}, "  ")
 }
 
-func renderYarnState(state string) string {
+func renderYarnState(state string, blink bool) string {
 	switch state {
 	case "RUNNING":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Render("● RUNNING")
+		if blink {
+			return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● RUNNING")
+		}
+		return "  RUNNING"
 	case "FINISHED":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("● FINISHED")
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("42")).Render("● FINISHED")
 	case "FAILED":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● FAILED")
 	case "KILLED":
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● KILLED")
 	case "ACCEPTED", "NEW":
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● " + state)
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("● " + state)
 	default:
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("● " + state)
 	}
@@ -959,6 +972,15 @@ func hasRunningStep(steps []appemr.Step) bool {
 		}
 	}
 
+	return false
+}
+
+func hasRunningYarnApplication(apps []appemr.YarnApplication) bool {
+	for _, app := range apps {
+		if app.State == "RUNNING" {
+			return true
+		}
+	}
 	return false
 }
 

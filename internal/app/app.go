@@ -53,6 +53,9 @@ type model struct {
 	remoteSelected     int
 	remoteLatency      string
 	remoteLatencyID    int
+	refreshKind        string
+	refreshStartedAt   time.Time
+	refreshStatus      string
 	statusBlink        bool
 	remoteShareErr     string
 }
@@ -262,6 +265,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.emrDetail.stepSelected = 0
 					m.emrDetail.stepLoading = true
 					m.emrDetail.stepErr = ""
+					m.startRefresh("steps")
 					m.status = "Refreshing EMR steps..."
 					return m, loadEMRSteps(m.emrDetail.detail.ID, "")
 				case "yarn":
@@ -273,6 +277,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.emrDetail.yarnSelected = 0
 					m.emrDetail.yarnLoading = true
 					m.emrDetail.yarnErr = ""
+					m.startRefresh("yarn")
 					m.status = "Refreshing YARN applications..."
 					return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
 				default:
@@ -314,13 +319,28 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * m.emrDetailPageSize()
 					}
 				} else if m.emrDetail.activeTab == "steps" {
-					if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
-						m.emrDetail.stepPage++
-						m.emrDetail.stepSelected = m.emrDetail.stepPage * m.emrDetailPageSize()
-					} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
+					if m.emrDetail.stepLoading {
+						return m, nil
+					}
+
+					pageSize := m.emrDetailPageSize()
+					currentPageEnd := (m.emrDetail.stepPage + 1) * pageSize
+					if len(m.emrDetail.steps) < currentPageEnd && m.emrDetail.stepMarker != "" {
 						m.emrDetail.stepLoading = true
 						m.emrDetail.stepErr = ""
 						return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+					}
+
+					nextPage := m.emrDetail.stepPage + 1
+					nextPageStart := nextPage * pageSize
+					if nextPageStart < len(m.emrDetail.steps) || m.emrDetail.stepMarker != "" {
+						m.emrDetail.stepPage = nextPage
+						m.emrDetail.stepSelected = nextPageStart
+						if len(m.emrDetail.steps) < nextPageStart+pageSize && m.emrDetail.stepMarker != "" {
+							m.emrDetail.stepLoading = true
+							m.emrDetail.stepErr = ""
+							return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+						}
 					}
 				} else if m.emrDetail.activeTab == "overview" {
 					m.emrDetail.overviewScroll = min(
@@ -371,8 +391,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.quit()
 		case "r":
 			if m.activeMenu == emrMenuIndex {
+				if m.emrLoading {
+					return m, nil
+				}
 				m.emrLoading = true
 				m.emrErr = ""
+				m.startRefresh("emr")
 				m.status = "Loading EMR clusters..."
 				return m, loadEMRClusters()
 			}
@@ -541,6 +565,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emrClustersLoadedMsg:
 		m.emrLoading = false
 		if msg.err != nil {
+			m.finishRefresh("emr", msg.err)
 			m.emrErr = msg.err.Error()
 			m.status = "Failed to load EMR clusters"
 			break
@@ -552,6 +577,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrMouseSelected = -1
 		m.emrErr = ""
 		m.status = fmt.Sprintf("Loaded %d running EMR clusters", len(msg.clusters))
+		m.finishRefresh("emr", nil)
 	case emrClusterDetailLoadedMsg:
 		m.emrDetail.loading = false
 		if msg.err != nil {
@@ -577,6 +603,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case emrStepsLoadedMsg:
 		m.emrDetail.stepLoading = false
 		if msg.err != nil {
+			m.finishRefresh("steps", msg.err)
 			m.emrDetail.stepErr = msg.err.Error()
 			m.status = "Failed to load EMR steps"
 			break
@@ -586,12 +613,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrDetail.stepMarker = msg.page.NextMarker
 		m.emrDetail.stepErr = ""
 		m.status = fmt.Sprintf("Loaded %d EMR steps", len(m.emrDetail.steps))
+		currentPageEnd := (m.emrDetail.stepPage + 1) * m.emrDetailPageSize()
+		if len(m.emrDetail.steps) < currentPageEnd && m.emrDetail.stepMarker != "" {
+			m.emrDetail.stepLoading = true
+			m.status = fmt.Sprintf("Loading more EMR steps (%d loaded)...", len(m.emrDetail.steps))
+			return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+		}
+		m.finishRefresh("steps", nil)
 		if hasRunningStep(m.emrDetail.steps) {
 			return m, blinkRemoteStatus()
 		}
 	case yarnAppsLoadedMsg:
 		m.emrDetail.yarnLoading = false
 		if msg.err != nil {
+			m.finishRefresh("yarn", msg.err)
 			m.emrDetail.yarnErr = msg.err.Error()
 			m.status = "Failed to load YARN applications"
 			break
@@ -599,6 +634,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrDetail.yarnApps = msg.apps
 		m.emrDetail.yarnErr = ""
 		m.status = fmt.Sprintf("Loaded %d YARN applications", len(msg.apps))
+		m.finishRefresh("yarn", nil)
+		if hasRunningYarnApplication(m.emrDetail.yarnApps) &&
+			!hasRunningStep(m.emrDetail.steps) &&
+			!m.hasActiveBlinkingRemoteShare() {
+			return m, blinkRemoteStatus()
+		}
 	case sshKeysLoadedMsg:
 		if msg.err != nil {
 			m.remoteDialog.err = msg.err.Error()
@@ -676,7 +717,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case blinkStatusMsg:
 		m.statusBlink = !m.statusBlink
-		if m.hasActiveBlinkingRemoteShare() || (m.emrDetail.visible && hasRunningStep(m.emrDetail.steps)) {
+		if m.hasActiveBlinkingRemoteShare() ||
+			(m.emrDetail.visible &&
+				(hasRunningStep(m.emrDetail.steps) || hasRunningYarnApplication(m.emrDetail.yarnApps))) {
 			return m, blinkRemoteStatus()
 		}
 	}
@@ -802,7 +845,7 @@ func (m model) renderStatusBar() string {
 		text += "  v 开启鼠标"
 	}
 
-	right := ""
+	right := m.refreshStatusText()
 	if m.activeMenu == remoteMenuIndex && !m.emrDetail.visible && len(m.remoteShareRecords) > 0 {
 		latency := "--"
 		if m.remoteLatencyID == m.remoteShareRecords[m.remoteSelected].ID && m.remoteLatency != "" {
@@ -826,6 +869,38 @@ func (m model) renderStatusBar() string {
 
 func (m model) dialogContentHeight() int {
 	return max(m.height-statusBarHeight, 0)
+}
+
+func (m *model) startRefresh(kind string) {
+	m.refreshKind = kind
+	m.refreshStartedAt = time.Now()
+	m.refreshStatus = "刷新中"
+}
+
+func (m *model) finishRefresh(kind string, refreshErr error) {
+	if m.refreshKind != kind || m.refreshStartedAt.IsZero() {
+		return
+	}
+
+	elapsed := time.Since(m.refreshStartedAt).Round(time.Millisecond)
+	if refreshErr != nil {
+		m.refreshStatus = fmt.Sprintf("刷新失败(耗时:%s)", elapsed)
+	} else {
+		m.refreshStatus = fmt.Sprintf("已刷新(耗时:%s)", elapsed)
+	}
+}
+
+func (m model) refreshStatusText() string {
+	if m.refreshStatus == "" {
+		return ""
+	}
+	if !m.emrDetail.visible && m.activeMenu == emrMenuIndex && m.refreshKind == "emr" {
+		return m.refreshStatus + " "
+	}
+	if m.emrDetail.visible && m.emrDetail.activeTab == m.refreshKind {
+		return m.refreshStatus + " "
+	}
+	return ""
 }
 
 func (m model) quit() (tea.Model, tea.Cmd) {

@@ -116,3 +116,22 @@ func TestStepColumnWidthPriorities(t *testing.T) {
 		)
 	}
 }
+
+func TestRefreshStatusIsScopedToCurrentPage(t *testing.T) {
+	m := model{activeMenu: emrMenuIndex}
+	m.startRefresh("emr")
+	if got := m.refreshStatusText(); got != "刷新中 " {
+		t.Fatalf("EMR refresh status = %q, want %q", got, "刷新中 ")
+	}
+
+	m.emrDetail.visible = true
+	m.emrDetail.activeTab = "steps"
+	if got := m.refreshStatusText(); got != "" {
+		t.Fatalf("Steps page displayed EMR refresh status %q", got)
+	}
+
+	m.startRefresh("steps")
+	if got := m.refreshStatusText(); got != "刷新中 " {
+		t.Fatalf("Steps refresh status = %q, want %q", got, "刷新中 ")
+	}
+}
