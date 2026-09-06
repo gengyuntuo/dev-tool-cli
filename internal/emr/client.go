@@ -2,7 +2,9 @@ package emr
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
@@ -48,6 +50,15 @@ type Step struct {
 	CreatedAt string
 	StartedAt string
 	EndedAt   string
+}
+
+type YarnApplication struct {
+	ID        string
+	Name      string
+	State     string
+	User      string
+	StartedAt string
+	Elapsed   string
 }
 
 func NewClient(ctx context.Context, region string) (*awsemr.Client, error) {
@@ -235,6 +246,92 @@ func ListStepsPage(ctx context.Context, region string, clusterID string, marker 
 	}
 
 	return StepPage{Steps: steps, NextMarker: nextMarker}, nil
+}
+
+func ListYarnApplications(ctx context.Context, host string) ([]YarnApplication, error) {
+	if host == "" || host == "-" {
+		return nil, nil
+	}
+
+	url := fmt.Sprintf("http://%s:8088/ws/v1/cluster/apps?states=RUNNING,FINISHED,FAILED,KILLED,ACCEPTED,NEW", host)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, fmt.Errorf("new yarn request: %w", err)
+	}
+
+	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("call yarn api: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("yarn api %s returned status %s", url, resp.Status)
+	}
+
+	var payload struct {
+		Apps struct {
+			App []struct {
+				ID          string `json:"id"`
+				Name        string `json:"name"`
+				State       string `json:"state"`
+				User        string `json:"user"`
+				StartedTime int64  `json:"startedTime"`
+				ElapsedTime int64  `json:"elapsedTime"`
+			} `json:"app"`
+		} `json:"apps"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode yarn api response: %w", err)
+	}
+
+	apps := make([]YarnApplication, 0, len(payload.Apps.App))
+	for _, app := range payload.Apps.App {
+		appID := app.ID
+		if appID == "" {
+			appID = "-"
+		}
+		name := app.Name
+		if name == "" {
+			name = "-"
+		}
+		user := app.User
+		if user == "" {
+			user = "-"
+		}
+		startedAt := "-"
+		if app.StartedTime > 0 {
+			startedAt = time.UnixMilli(app.StartedTime).Local().Format(time.DateTime)
+		}
+		elapsed := formatYarnDuration(app.ElapsedTime)
+		apps = append(apps, YarnApplication{
+			ID:        appID,
+			Name:      name,
+			State:     app.State,
+			User:      user,
+			StartedAt: startedAt,
+			Elapsed:   elapsed,
+		})
+	}
+	return apps, nil
+}
+
+func formatYarnDuration(ms int64) string {
+	if ms <= 0 {
+		return "0秒"
+	}
+	totalSeconds := ms / 1000
+	hours := totalSeconds / 3600
+	minutes := (totalSeconds % 3600) / 60
+	seconds := totalSeconds % 60
+	parts := make([]string, 0, 3)
+	if hours > 0 {
+		parts = append(parts, fmt.Sprintf("%d时", hours))
+	}
+	if minutes > 0 || len(parts) > 0 {
+		parts = append(parts, fmt.Sprintf("%d分", minutes))
+	}
+	parts = append(parts, fmt.Sprintf("%d秒", seconds))
+	return strings.Join(parts, "")
 }
 
 func listInstanceSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {

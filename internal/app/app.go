@@ -76,6 +76,12 @@ type emrDetailState struct {
 	stepMarker   string
 	stepPage     int
 	stepSelected int
+	activeTab    string
+	yarnApps     []appemr.YarnApplication
+	yarnLoading  bool
+	yarnErr      string
+	yarnPage     int
+	yarnSelected int
 }
 
 type remoteShareRecord struct {
@@ -104,6 +110,11 @@ type emrClusterDetailLoadedMsg struct {
 
 type emrStepsLoadedMsg struct {
 	page appemr.StepPage
+	err  error
+}
+
+type yarnAppsLoadedMsg struct {
+	apps []appemr.YarnApplication
 	err  error
 }
 
@@ -149,14 +160,36 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.emrDetail.visible = false
 				return m, nil
+			case "tab":
+				if m.emrDetail.activeTab == "yarn" {
+					m.emrDetail.activeTab = "step"
+				} else {
+					m.emrDetail.activeTab = "yarn"
+					if m.emrDetail.yarnApps == nil && !m.emrDetail.yarnLoading {
+						m.emrDetail.yarnLoading = true
+						m.emrDetail.yarnErr = ""
+						return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
+					}
+				}
+				return m, nil
 			case "p":
-				if m.emrDetail.stepPage > 0 {
+				if m.emrDetail.activeTab == "yarn" {
+					if m.emrDetail.yarnPage > 0 {
+						m.emrDetail.yarnPage--
+						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
+					}
+				} else if m.emrDetail.stepPage > 0 {
 					m.emrDetail.stepPage--
 					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
 				}
 				return m, nil
 			case "n":
-				if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
+				if m.emrDetail.activeTab == "yarn" {
+					if m.emrDetail.yarnPage < m.emrDetailYarnMaxPage() {
+						m.emrDetail.yarnPage++
+						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
+					}
+				} else if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
 					m.emrDetail.stepPage++
 					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
 				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
@@ -166,13 +199,23 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				return m, nil
 			case "up":
-				if m.emrDetail.stepSelected > 0 {
+				if m.emrDetail.activeTab == "yarn" {
+					if m.emrDetail.yarnSelected > 0 {
+						m.emrDetail.yarnSelected--
+						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
+					}
+				} else if m.emrDetail.stepSelected > 0 {
 					m.emrDetail.stepSelected--
 					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
 				}
 				return m, nil
 			case "down":
-				if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
+				if m.emrDetail.activeTab == "yarn" {
+					if m.emrDetail.yarnSelected < len(m.emrDetail.yarnApps)-1 {
+						m.emrDetail.yarnSelected++
+						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
+					}
+				} else if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
 					m.emrDetail.stepSelected++
 					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
 				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
@@ -311,9 +354,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrDetail.stepMarker = ""
 		m.emrDetail.stepPage = 0
 		m.emrDetail.stepSelected = 0
+		m.emrDetail.activeTab = "step"
+		m.emrDetail.yarnApps = nil
+		m.emrDetail.yarnSelected = 0
+		m.emrDetail.yarnPage = 0
 		m.emrDetail.err = ""
 		m.status = "Loaded EMR cluster detail"
-		return m, loadEMRSteps(msg.detail.ID, "")
+		return m, tea.Batch(loadEMRSteps(msg.detail.ID, ""), loadYarnApps(msg.detail.PrimaryNodePrivateDNS))
 	case emrStepsLoadedMsg:
 		m.emrDetail.stepLoading = false
 		if msg.err != nil {
@@ -329,6 +376,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if hasRunningStep(m.emrDetail.steps) {
 			return m, blinkRemoteStatus()
 		}
+	case yarnAppsLoadedMsg:
+		m.emrDetail.yarnLoading = false
+		if msg.err != nil {
+			m.emrDetail.yarnErr = msg.err.Error()
+			m.status = "Failed to load YARN applications"
+			break
+		}
+		m.emrDetail.yarnApps = msg.apps
+		m.emrDetail.yarnErr = ""
+		m.status = fmt.Sprintf("Loaded %d YARN applications", len(msg.apps))
 	case sshKeysLoadedMsg:
 		if msg.err != nil {
 			m.remoteDialog.err = msg.err.Error()
@@ -469,7 +526,7 @@ func (m model) renderStatusBar() string {
 		text = " Enter 确认删除  Esc 取消  q 退出"
 	}
 	if m.emrDetail.visible {
-		text = " ↑/↓ 选择 Step  p 前一页  n 下一页  Esc 返回  q 退出"
+		text = " Tab 切换  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
 	}
 
 	return lipgloss.NewStyle().
