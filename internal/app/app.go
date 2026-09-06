@@ -983,6 +983,7 @@ func selectedRowStyle(row string, width int) string {
 	if width <= 0 {
 		width = lipgloss.Width(row)
 	}
+	row = ansi.Strip(row)
 	return lipgloss.NewStyle().
 		Width(width).
 		Foreground(lipgloss.Color("230")).
