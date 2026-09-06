@@ -132,6 +132,15 @@ func formatCell(value string, width int) string {
 	return padRight(value, width)
 }
 
+func formatCellRight(value string, width int) string {
+	if lipgloss.Width(value) > width {
+		value = truncate(value, width)
+	}
+
+	padding := max(width-lipgloss.Width(value), 0)
+	return strings.Repeat(" ", padding) + value
+}
+
 func emrClusterColumnWidths(tableWidth int) (int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	gapWidth := 6
@@ -844,7 +853,7 @@ func formatStepRow(tableWidth int, id, name, createdAt, startedAt, endedAt, elap
 		formatCell(createdAt, createdAtWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCell(endedAt, endedAtWidth),
-		formatCell(elapsed, elapsedWidth),
+		formatCellRight(elapsed, elapsedWidth),
 		formatCell(state, stateWidth),
 	}, "  ")
 }
@@ -856,7 +865,7 @@ func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed str
 		formatCell(name, nameWidth),
 		formatCell(user, userWidth),
 		formatCell(startedAt, startedAtWidth),
-		formatCell(elapsed, elapsedWidth),
+		formatCellRight(elapsed, elapsedWidth),
 		formatCell(renderYarnState(state), stateWidth),
 	}, "  ")
 }
