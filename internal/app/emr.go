@@ -145,20 +145,37 @@ func emrClusterColumnWidths(tableWidth int) (int, int, int, int) {
 
 func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
-	gapWidth := 12
-	idWidth := 18
-	createdAtWidth := 19
-	startedAtWidth := 19
-	endedAtWidth := 19
-	elapsedWidth := 18
-	stateWidth := 18
-	nameWidth := innerWidth - gapWidth - idWidth - createdAtWidth - startedAtWidth - endedAtWidth - elapsedWidth - stateWidth
-	if nameWidth < 12 {
-		nameWidth = 12
-		idWidth = max(innerWidth-gapWidth-nameWidth-createdAtWidth-startedAtWidth-endedAtWidth-elapsedWidth-stateWidth, 8)
+	availableWidth := max(innerWidth-12, 7)
+	widths := []int{24, 8, 19, 19, 19, 16, 18}
+	totalWidth := 0
+	for _, width := range widths {
+		totalWidth += width
 	}
 
-	return idWidth, nameWidth, createdAtWidth, startedAtWidth, endedAtWidth, elapsedWidth, stateWidth
+	shrink := func(index, minimum int) {
+		if totalWidth <= availableWidth {
+			return
+		}
+		reduction := min(widths[index]-minimum, totalWidth-availableWidth)
+		widths[index] -= reduction
+		totalWidth -= reduction
+	}
+	shrink(5, 10)
+	shrink(6, 12)
+	shrink(4, 12)
+	shrink(3, 12)
+	shrink(2, 12)
+	shrink(1, 4)
+	shrink(0, 8)
+	for _, index := range []int{1, 5, 6, 4, 3, 2, 0} {
+		shrink(index, 1)
+	}
+
+	if totalWidth < availableWidth {
+		widths[1] += availableWidth - totalWidth
+	}
+
+	return widths[0], widths[1], widths[2], widths[3], widths[4], widths[5], widths[6]
 }
 
 func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
@@ -254,6 +271,9 @@ func (m model) renderEMRDetailPage(height int) string {
 func (m model) emrDetailTableWidth() int {
 	if m.emrDetail.activeTab == "yarn" {
 		return max(min(m.width-4, 180), 40)
+	}
+	if m.emrDetail.activeTab == "steps" {
+		return max(min(m.width-4, 200), 40)
 	}
 	return tableWidth(m.width)
 }

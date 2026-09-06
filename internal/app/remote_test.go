@@ -92,3 +92,27 @@ func TestEMRDetailPageSizeUsesAvailableHeight(t *testing.T) {
 		}
 	}
 }
+
+func TestStepColumnWidthPriorities(t *testing.T) {
+	idWidth, nameWidth, createdWidth, startedWidth, endedWidth, elapsedWidth, stateWidth := emrStepColumnWidths(160)
+	if idWidth != 24 {
+		t.Fatalf("ID width = %d, want 24", idWidth)
+	}
+	if nameWidth <= 8 {
+		t.Fatalf("Name width = %d, want more than minimum width", nameWidth)
+	}
+	if createdWidth != 19 || startedWidth != 19 || endedWidth != 19 || elapsedWidth != 16 || stateWidth != 18 {
+		t.Fatalf(
+			"non-Name widths = %v, want [19 19 19 16 18]",
+			[]int{createdWidth, startedWidth, endedWidth, elapsedWidth, stateWidth},
+		)
+	}
+
+	idWidth, nameWidth, createdWidth, startedWidth, endedWidth, _, _ = emrStepColumnWidths(128)
+	if idWidth != 24 || nameWidth != 8 || createdWidth != 19 || startedWidth != 19 || endedWidth != 19 {
+		t.Fatalf(
+			"128-column priorities = %v, want ID and timestamps preserved with minimum Name",
+			[]int{idWidth, nameWidth, createdWidth, startedWidth, endedWidth},
+		)
+	}
+}
