@@ -29,6 +29,7 @@ var menus = []string{"EMR", "Remote", "Help"}
 type model struct {
 	width              int
 	height             int
+	mouseEnabled       bool
 	activeMenu         int
 	status             string
 	emrClusters        []appemr.Cluster
@@ -185,7 +186,7 @@ type remoteLatencyMeasuredMsg struct {
 }
 
 func NewModel() tea.Model {
-	return model{emrMouseSelected: -1}
+	return model{mouseEnabled: true, emrMouseSelected: -1}
 }
 
 func (m model) Init() tea.Cmd {
@@ -195,6 +196,15 @@ func (m model) Init() tea.Cmd {
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		if !m.remoteDialog.visible && !m.remoteProxyDialog.visible && msg.String() == "v" {
+			m.mouseEnabled = !m.mouseEnabled
+			if m.mouseEnabled {
+				m.status = "Mouse interaction enabled"
+				return m, tea.EnableMouseCellMotion
+			}
+			m.status = "Text selection mode enabled"
+			return m, tea.DisableMouse
+		}
 		if m.remoteDialog.visible {
 			return m.updateRemoteDialog(msg)
 		}
@@ -447,6 +457,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseMsg:
+		if !m.mouseEnabled {
+			return m, nil
+		}
 		if m.emrItemDialog.visible {
 			switch msg.Button {
 			case tea.MouseButtonWheelUp:
@@ -783,6 +796,11 @@ func (m model) renderStatusBar() string {
 	if m.emrItemDialog.visible {
 		text = " ↑/↓ 滚动  PgUp/PgDn 翻页  返回<Esc>  q 退出"
 	}
+	if m.mouseEnabled {
+		text += "  v 文本选择"
+	} else {
+		text += "  v 开启鼠标"
+	}
 
 	right := ""
 	if m.activeMenu == remoteMenuIndex && !m.emrDetail.visible && len(m.remoteShareRecords) > 0 {
@@ -797,6 +815,7 @@ func (m model) renderStatusBar() string {
 		text = ansi.Truncate(text, leftWidth, "")
 		text = padRight(text, leftWidth) + right
 	}
+	text = ansi.Truncate(text, m.width, "")
 
 	return lipgloss.NewStyle().
 		Width(m.width).
