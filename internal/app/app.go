@@ -10,6 +10,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const statusBarHeight = 1
@@ -67,28 +68,30 @@ type remoteDeleteDialog struct {
 }
 
 type emrDetailState struct {
-	visible      bool
-	loading      bool
-	err          string
-	detail       appemr.ClusterDetail
-	steps        []appemr.Step
-	stepLoading  bool
-	stepErr      string
-	stepMarker   string
-	stepPage     int
-	stepSelected int
-	activeTab    string
-	yarnApps     []appemr.YarnApplication
-	yarnLoading  bool
-	yarnErr      string
-	yarnPage     int
-	yarnSelected int
+	visible        bool
+	loading        bool
+	err            string
+	detail         appemr.ClusterDetail
+	steps          []appemr.Step
+	stepLoading    bool
+	stepErr        string
+	stepMarker     string
+	stepPage       int
+	stepSelected   int
+	activeTab      string
+	overviewScroll int
+	yarnApps       []appemr.YarnApplication
+	yarnLoading    bool
+	yarnErr        string
+	yarnPage       int
+	yarnSelected   int
 }
 
 type emrItemDialog struct {
 	visible bool
 	kind    string
 	index   int
+	scroll  int
 }
 
 type remoteShareRecord struct {
@@ -166,6 +169,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			case "esc":
 				m.emrItemDialog.visible = false
+			case "up":
+				if m.emrItemDialog.scroll > 0 {
+					m.emrItemDialog.scroll--
+				}
+			case "down":
+				if m.emrItemDialog.scroll < m.emrItemDialogMaxScroll() {
+					m.emrItemDialog.scroll++
+				}
+			case "pgup":
+				m.emrItemDialog.scroll = max(m.emrItemDialog.scroll-5, 0)
+			case "pgdown":
+				m.emrItemDialog.scroll = min(m.emrItemDialog.scroll+5, m.emrItemDialogMaxScroll())
 			}
 			return m, nil
 		}
@@ -205,6 +220,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepPage > 0 {
 					m.emrDetail.stepPage--
 					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+				} else if m.emrDetail.activeTab == "overview" {
+					m.emrDetail.overviewScroll = max(m.emrDetail.overviewScroll-m.emrOverviewVisibleLines(), 0)
 				}
 				return m, nil
 			case "n":
@@ -222,6 +239,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.stepErr = ""
 						return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
 					}
+				} else if m.emrDetail.activeTab == "overview" {
+					m.emrDetail.overviewScroll = min(
+						m.emrDetail.overviewScroll+m.emrOverviewVisibleLines(),
+						m.emrOverviewMaxScroll(),
+					)
 				}
 				return m, nil
 			case "up":
@@ -233,6 +255,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepSelected > 0 {
 					m.emrDetail.stepSelected--
 					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+				} else if m.emrDetail.activeTab == "overview" && m.emrDetail.overviewScroll > 0 {
+					m.emrDetail.overviewScroll--
 				}
 				return m, nil
 			case "down":
@@ -250,6 +274,8 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.stepErr = ""
 						return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
 					}
+				} else if m.emrDetail.activeTab == "overview" && m.emrDetail.overviewScroll < m.emrOverviewMaxScroll() {
+					m.emrDetail.overviewScroll++
 				}
 				return m, nil
 			}
@@ -336,6 +362,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	case tea.MouseMsg:
+		if m.emrItemDialog.visible {
+			switch msg.Button {
+			case tea.MouseButtonWheelUp:
+				if m.emrItemDialog.scroll > 0 {
+					m.emrItemDialog.scroll--
+				}
+				return m, nil
+			case tea.MouseButtonWheelDown:
+				if m.emrItemDialog.scroll < m.emrItemDialogMaxScroll() {
+					m.emrItemDialog.scroll++
+				}
+				return m, nil
+			}
+		}
 		if msg.Action == tea.MouseActionPress && msg.Button == tea.MouseButtonLeft {
 			if m.remoteDeleteDialog.visible {
 				return m.updateRemoteDeleteDialogMouse(msg)
@@ -579,7 +619,7 @@ func (m model) renderStatusBar() string {
 		text = " Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
 	}
 	if m.emrItemDialog.visible {
-		text = " 返回<Esc>  q 退出"
+		text = " ↑/↓ 滚动  PgUp/PgDn 翻页  返回<Esc>  q 退出"
 	}
 
 	return lipgloss.NewStyle().
@@ -589,16 +629,34 @@ func (m model) renderStatusBar() string {
 		Render(text)
 }
 
-func (m model) renderDialogPage(dialog string) string {
-	contentHeight := max(m.height-statusBarHeight, 0)
-	return strings.Join([]string{
-		lipgloss.Place(m.width, contentHeight, lipgloss.Center, lipgloss.Center, dialog),
-		m.renderStatusBar(),
-	}, "\n")
-}
-
 func (m model) dialogContentHeight() int {
 	return max(m.height-statusBarHeight, 0)
+}
+
+func (m model) overlayDialog(base, dialog string) string {
+	baseLines := strings.Split(base, "\n")
+	dialogLines := strings.Split(dialog, "\n")
+	contentHeight := m.dialogContentHeight()
+	dialogWidth := lipgloss.Width(dialog)
+	dialogHeight := lipgloss.Height(dialog)
+	left := max((m.width-dialogWidth)/2, 0)
+	top := max((contentHeight-dialogHeight)/2, 0)
+	visibleWidth := min(dialogWidth, max(m.width-left, 0))
+
+	for i, dialogLine := range dialogLines {
+		y := top + i
+		if y >= contentHeight || y >= len(baseLines) || visibleWidth == 0 {
+			break
+		}
+
+		baseLine := baseLines[y]
+		prefix := ansi.Cut(baseLine, 0, left)
+		overlay := ansi.Cut(dialogLine, 0, visibleWidth)
+		suffix := ansi.Cut(baseLine, left+visibleWidth, m.width)
+		baseLines[y] = prefix + overlay + suffix
+	}
+
+	return strings.Join(baseLines, "\n")
 }
 
 func menuIndexAt(x int) (int, bool) {

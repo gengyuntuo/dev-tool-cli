@@ -25,12 +25,16 @@ type Cluster struct {
 
 type ClusterDetail struct {
 	Cluster
-	ReleaseLabel    string
-	LogURI          string
-	ServiceRole     string
-	StepConcurrency string
-	Applications    []string
-	Instances       []InstanceSummary
+	ReleaseLabel      string
+	LogURI            string
+	ServiceRole       string
+	StepConcurrency   string
+	StateChangeReason string
+	ReadyAt           string
+	EndedAt           string
+	Elapsed           string
+	Applications      []string
+	Instances         []InstanceSummary
 }
 
 type StepPage struct {
@@ -52,15 +56,44 @@ type Step struct {
 	StartedAt string
 	EndedAt   string
 	Elapsed   string
+	LogURI    string
 }
 
 type YarnApplication struct {
-	ID        string
-	Name      string
-	State     string
-	User      string
-	StartedAt string
-	Elapsed   string
+	ID                       string
+	Name                     string
+	State                    string
+	User                     string
+	Queue                    string
+	FinalStatus              string
+	Progress                 string
+	TrackingURL              string
+	Diagnostics              string
+	ApplicationType          string
+	ApplicationTags          string
+	Priority                 string
+	StartedAt                string
+	FinishedAt               string
+	Elapsed                  string
+	AMContainerLogs          string
+	AMHostHTTPAddress        string
+	AllocatedMB              string
+	AllocatedVCores          string
+	ReservedMB               string
+	ReservedVCores           string
+	RunningContainers        string
+	MemorySeconds            string
+	VCoreSeconds             string
+	QueueUsagePercentage     string
+	ClusterUsagePercentage   string
+	PreemptedResourceMB      string
+	PreemptedResourceVCores  string
+	NonAMContainersPreempted string
+	AMContainersPreempted    string
+	LogAggregationStatus     string
+	UnmanagedApplication     string
+	AppNodeLabelExpression   string
+	AMNodeLabelExpression    string
 }
 
 func NewClient(ctx context.Context, region string) (*awsemr.Client, error) {
@@ -138,11 +171,15 @@ func GetClusterDetail(ctx context.Context, region string, clusterID string) (Clu
 			PrimaryNodePrivateDNS: primaryNodePrivateDNS,
 			CreatedAt:             clusterCreatedAt(cluster.Status),
 		},
-		ReleaseLabel:    stringValue(cluster.ReleaseLabel),
-		LogURI:          stringValue(cluster.LogUri),
-		ServiceRole:     stringValue(cluster.ServiceRole),
-		StepConcurrency: int32Value(cluster.StepConcurrencyLevel),
-		Applications:    applications(cluster.Applications),
+		ReleaseLabel:      stringValue(cluster.ReleaseLabel),
+		LogURI:            stringValue(cluster.LogUri),
+		ServiceRole:       stringValue(cluster.ServiceRole),
+		StepConcurrency:   int32Value(cluster.StepConcurrencyLevel),
+		StateChangeReason: clusterStateChangeReason(cluster.Status),
+		ReadyAt:           clusterTimelineTime(cluster.Status, "ready"),
+		EndedAt:           clusterTimelineTime(cluster.Status, "ended"),
+		Elapsed:           clusterElapsed(cluster.Status),
+		Applications:      applications(cluster.Applications),
 	}
 
 	instances, err := listInstanceSummaries(ctx, client, clusterID)
@@ -245,6 +282,7 @@ func ListStepsPage(ctx context.Context, region string, clusterID string, marker 
 			StartedAt: stepTime(step.Status, "started"),
 			EndedAt:   stepTime(step.Status, "ended"),
 			Elapsed:   stepElapsed(step.Status),
+			LogURI:    stringValue(step.LogUri),
 		})
 	}
 
@@ -280,12 +318,40 @@ func ListYarnApplications(ctx context.Context, host string) ([]YarnApplication, 
 	var payload struct {
 		Apps struct {
 			App []struct {
-				ID          string `json:"id"`
-				Name        string `json:"name"`
-				State       string `json:"state"`
-				User        string `json:"user"`
-				StartedTime int64  `json:"startedTime"`
-				ElapsedTime int64  `json:"elapsedTime"`
+				ID                         string  `json:"id"`
+				Name                       string  `json:"name"`
+				State                      string  `json:"state"`
+				User                       string  `json:"user"`
+				Queue                      string  `json:"queue"`
+				FinalStatus                string  `json:"finalStatus"`
+				Progress                   float64 `json:"progress"`
+				TrackingURL                string  `json:"trackingUrl"`
+				Diagnostics                string  `json:"diagnostics"`
+				ApplicationType            string  `json:"applicationType"`
+				ApplicationTags            string  `json:"applicationTags"`
+				Priority                   int64   `json:"priority"`
+				StartedTime                int64   `json:"startedTime"`
+				FinishedTime               int64   `json:"finishedTime"`
+				ElapsedTime                int64   `json:"elapsedTime"`
+				AMContainerLogs            string  `json:"amContainerLogs"`
+				AMHostHTTPAddress          string  `json:"amHostHttpAddress"`
+				AllocatedMB                int64   `json:"allocatedMB"`
+				AllocatedVCores            int64   `json:"allocatedVCores"`
+				ReservedMB                 int64   `json:"reservedMB"`
+				ReservedVCores             int64   `json:"reservedVCores"`
+				RunningContainers          int64   `json:"runningContainers"`
+				MemorySeconds              int64   `json:"memorySeconds"`
+				VCoreSeconds               int64   `json:"vcoreSeconds"`
+				QueueUsagePercentage       float64 `json:"queueUsagePercentage"`
+				ClusterUsagePercentage     float64 `json:"clusterUsagePercentage"`
+				PreemptedResourceMB        int64   `json:"preemptedResourceMB"`
+				PreemptedResourceVCores    int64   `json:"preemptedResourceVCores"`
+				NumNonAMContainerPreempted int64   `json:"numNonAMContainerPreempted"`
+				NumAMContainerPreempted    int64   `json:"numAMContainerPreempted"`
+				LogAggregationStatus       string  `json:"logAggregationStatus"`
+				UnmanagedApplication       bool    `json:"unmanagedApplication"`
+				AppNodeLabelExpression     string  `json:"appNodeLabelExpression"`
+				AMNodeLabelExpression      string  `json:"amNodeLabelExpression"`
 			} `json:"app"`
 		} `json:"apps"`
 	}
@@ -311,14 +377,46 @@ func ListYarnApplications(ctx context.Context, host string) ([]YarnApplication, 
 		if app.StartedTime > 0 {
 			startedAt = time.UnixMilli(app.StartedTime).Local().Format(time.DateTime)
 		}
+		finishedAt := "-"
+		if app.FinishedTime > 0 {
+			finishedAt = time.UnixMilli(app.FinishedTime).Local().Format(time.DateTime)
+		}
 		elapsed := formatYarnDuration(app.ElapsedTime)
 		apps = append(apps, YarnApplication{
-			ID:        appID,
-			Name:      name,
-			State:     app.State,
-			User:      user,
-			StartedAt: startedAt,
-			Elapsed:   elapsed,
+			ID:                       appID,
+			Name:                     name,
+			State:                    valueOrDash(app.State),
+			User:                     user,
+			Queue:                    valueOrDash(app.Queue),
+			FinalStatus:              valueOrDash(app.FinalStatus),
+			Progress:                 fmt.Sprintf("%.1f%%", app.Progress),
+			TrackingURL:              valueOrDash(app.TrackingURL),
+			Diagnostics:              valueOrDash(strings.Join(strings.Fields(app.Diagnostics), " ")),
+			ApplicationType:          valueOrDash(app.ApplicationType),
+			ApplicationTags:          valueOrDash(app.ApplicationTags),
+			Priority:                 fmt.Sprintf("%d", app.Priority),
+			StartedAt:                startedAt,
+			FinishedAt:               finishedAt,
+			Elapsed:                  elapsed,
+			AMContainerLogs:          valueOrDash(app.AMContainerLogs),
+			AMHostHTTPAddress:        valueOrDash(app.AMHostHTTPAddress),
+			AllocatedMB:              fmt.Sprintf("%d", app.AllocatedMB),
+			AllocatedVCores:          fmt.Sprintf("%d", app.AllocatedVCores),
+			ReservedMB:               fmt.Sprintf("%d", app.ReservedMB),
+			ReservedVCores:           fmt.Sprintf("%d", app.ReservedVCores),
+			RunningContainers:        fmt.Sprintf("%d", app.RunningContainers),
+			MemorySeconds:            fmt.Sprintf("%d", app.MemorySeconds),
+			VCoreSeconds:             fmt.Sprintf("%d", app.VCoreSeconds),
+			QueueUsagePercentage:     fmt.Sprintf("%.2f%%", app.QueueUsagePercentage),
+			ClusterUsagePercentage:   fmt.Sprintf("%.2f%%", app.ClusterUsagePercentage),
+			PreemptedResourceMB:      fmt.Sprintf("%d", app.PreemptedResourceMB),
+			PreemptedResourceVCores:  fmt.Sprintf("%d", app.PreemptedResourceVCores),
+			NonAMContainersPreempted: fmt.Sprintf("%d", app.NumNonAMContainerPreempted),
+			AMContainersPreempted:    fmt.Sprintf("%d", app.NumAMContainerPreempted),
+			LogAggregationStatus:     valueOrDash(app.LogAggregationStatus),
+			UnmanagedApplication:     fmt.Sprintf("%t", app.UnmanagedApplication),
+			AppNodeLabelExpression:   valueOrDash(app.AppNodeLabelExpression),
+			AMNodeLabelExpression:    valueOrDash(app.AMNodeLabelExpression),
 		})
 	}
 
@@ -346,6 +444,13 @@ func yarnAppIDCompare(a, b string) int {
 		return 1
 	}
 	return -1
+}
+
+func valueOrDash(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "-"
+	}
+	return value
 }
 
 func formatYarnDuration(ms int64) string {
@@ -475,6 +580,55 @@ func clusterCreatedAt(status *types.ClusterStatus) string {
 	}
 
 	return status.Timeline.CreationDateTime.Local().Format(time.DateTime)
+}
+
+func clusterTimelineTime(status *types.ClusterStatus, field string) string {
+	if status == nil || status.Timeline == nil {
+		return "-"
+	}
+
+	var value *time.Time
+	switch field {
+	case "ready":
+		value = status.Timeline.ReadyDateTime
+	case "ended":
+		value = status.Timeline.EndDateTime
+	}
+	if value == nil {
+		return "-"
+	}
+	return value.Local().Format(time.DateTime)
+}
+
+func clusterElapsed(status *types.ClusterStatus) string {
+	if status == nil || status.Timeline == nil || status.Timeline.CreationDateTime == nil {
+		return "-"
+	}
+
+	end := time.Now()
+	if status.Timeline.EndDateTime != nil {
+		end = *status.Timeline.EndDateTime
+	}
+	if end.Before(*status.Timeline.CreationDateTime) {
+		return "-"
+	}
+	return formatYarnDuration(end.Sub(*status.Timeline.CreationDateTime).Milliseconds())
+}
+
+func clusterStateChangeReason(status *types.ClusterStatus) string {
+	if status == nil || status.StateChangeReason == nil {
+		return "-"
+	}
+
+	code := string(status.StateChangeReason.Code)
+	message := stringValue(status.StateChangeReason.Message)
+	if code == "" {
+		return message
+	}
+	if message == "-" {
+		return code
+	}
+	return code + ": " + message
 }
 
 func stepState(status *types.StepStatus) string {

@@ -239,7 +239,10 @@ func (m model) renderEMRDetailContent(tableWidth int) string {
 
 	switch m.emrDetail.activeTab {
 	case "overview":
-		return m.renderEMROverviewPanel(tableWidth, detail)
+		lines := strings.Split(m.renderEMROverviewPanel(tableWidth, detail), "\n")
+		start := min(m.emrDetail.overviewScroll, max(len(lines)-1, 0))
+		end := min(start+m.emrOverviewVisibleLines(), len(lines))
+		return strings.Join(lines[start:end], "\n")
 	case "yarn":
 		return m.renderYarnDetailContent(tableWidth, detail)
 	case "instances":
@@ -247,6 +250,15 @@ func (m model) renderEMRDetailContent(tableWidth int) string {
 	default:
 		return m.renderEMRStepsPanel(tableWidth)
 	}
+}
+
+func (m model) emrOverviewVisibleLines() int {
+	return max(m.height-statusBarHeight-4, 1)
+}
+
+func (m model) emrOverviewMaxScroll() int {
+	lines := strings.Split(m.renderEMROverviewPanel(tableWidth(m.width), m.emrDetail.detail), "\n")
+	return max(len(lines)-m.emrOverviewVisibleLines(), 0)
 }
 
 func (m model) renderEMRDetailTabs(tableWidth int) string {
@@ -282,17 +294,96 @@ func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetai
 		boxTop(tableWidth),
 		boxRow("ID: "+detail.ID, tableWidth),
 		boxRow("Name: "+detail.Name, tableWidth),
-		boxRow("State: "+detail.State, tableWidth),
 		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
 		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
 		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
-		boxRow("Created At: "+detail.CreatedAt, tableWidth),
 		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
 		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
 		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
 		boxBottom(tableWidth),
+		"",
+		"Status and time",
+		boxTop(tableWidth),
+		boxRow("State: "+detail.State, tableWidth),
+		boxRow("State change reason: "+detail.StateChangeReason, tableWidth),
+		boxRow("Created At: "+detail.CreatedAt, tableWidth),
+		boxRow("Ready At: "+detail.ReadyAt, tableWidth),
+		boxRow("Ended At: "+detail.EndedAt, tableWidth),
+		boxRow("Elapsed: "+detail.Elapsed, tableWidth),
+		boxBottom(tableWidth),
 	}
+
+	uiLinks := applicationUILinks(detail)
+	if len(uiLinks) > 0 {
+		lines = append(lines,
+			"",
+			"Application UIs on the primary node",
+			boxTop(tableWidth),
+		)
+		for _, link := range uiLinks {
+			lines = append(lines, boxRow(link, tableWidth))
+		}
+		lines = append(lines, boxBottom(tableWidth))
+	}
+
 	return strings.Join(lines, "\n")
+}
+
+func applicationUILinks(detail appemr.ClusterDetail) []string {
+	host := detail.PrimaryNodePrivateDNS
+	if host == "" || host == "-" {
+		return nil
+	}
+
+	links := []string{
+		"YARN ResourceManager: http://" + host + ":8088/",
+	}
+	if emrReleaseMajor(detail.ReleaseLabel) >= 6 {
+		links = append(links, "HDFS NameNode: http://"+host+":9870/")
+	} else {
+		links = append(links, "HDFS NameNode: http://"+host+":50070/")
+	}
+
+	applicationLinks := []struct {
+		application string
+		label       string
+		url         string
+	}{
+		{application: "Flink", label: "Flink History Server", url: "http://" + host + ":8082/"},
+		{application: "Ganglia", label: "Ganglia", url: "http://" + host + "/ganglia/"},
+		{application: "HBase", label: "HBase", url: "http://" + host + ":16010/"},
+		{application: "Hue", label: "Hue", url: "http://" + host + ":8888/"},
+		{application: "JupyterHub", label: "JupyterHub", url: "https://" + host + ":9443/"},
+		{application: "Livy", label: "Livy", url: "http://" + host + ":8998/"},
+		{application: "Spark", label: "Spark HistoryServer", url: "http://" + host + ":18080/"},
+		{application: "Tez", label: "Tez", url: "http://" + host + ":8080/tez-ui"},
+		{application: "Zeppelin", label: "Zeppelin", url: "http://" + host + ":8890/"},
+	}
+	for _, candidate := range applicationLinks {
+		if clusterHasApplication(detail.Applications, candidate.application) {
+			links = append(links, candidate.label+": "+candidate.url)
+		}
+	}
+
+	return links
+}
+
+func clusterHasApplication(applications []string, name string) bool {
+	for _, application := range applications {
+		fields := strings.Fields(application)
+		if len(fields) > 0 && strings.EqualFold(fields[0], name) {
+			return true
+		}
+	}
+	return false
+}
+
+func emrReleaseMajor(releaseLabel string) int {
+	var major int
+	if _, err := fmt.Sscanf(releaseLabel, "emr-%d", &major); err != nil {
+		return 6
+	}
+	return major
 }
 
 func (m model) renderEMRInstancesPanel(tableWidth int, detail appemr.ClusterDetail) string {
@@ -494,47 +585,24 @@ func emrDetailTabIndexAt(x int) (int, bool) {
 }
 
 func (m model) renderEMRItemDialog(base string) string {
-	_ = base
-
 	dialog := m.emrItemDialogView()
-	return m.renderDialogPage(dialog)
+	return m.overlayDialog(base, dialog)
 }
 
 func (m model) emrItemDialogView() string {
 	boxWidth := min(max(m.width-8, 56), 100)
-	lines := make([]string, 0, 12)
+	boxWidth = min(boxWidth, max(m.width-2, 20))
+	contentWidth := max(boxWidth-6, 1)
+	fields := wrapDetailLines(m.emrItemDialogFields(), contentWidth)
+	visibleLines := m.emrItemDialogVisibleLines()
+	scroll := min(m.emrItemDialog.scroll, max(len(fields)-visibleLines, 0))
+	end := min(scroll+visibleLines, len(fields))
 
-	switch m.emrItemDialog.kind {
-	case "step":
-		if m.emrItemDialog.index >= 0 && m.emrItemDialog.index < len(m.emrDetail.steps) {
-			step := m.emrDetail.steps[m.emrItemDialog.index]
-			lines = append(lines,
-				"Step Detail",
-				"",
-				"ID: "+step.ID,
-				"Name: "+step.Name,
-				"Created At: "+step.CreatedAt,
-				"Started At: "+step.StartedAt,
-				"Ended At: "+step.EndedAt,
-				"Elapsed: "+step.Elapsed,
-				"State: "+step.State,
-			)
-		}
-	case "yarn":
-		if m.emrItemDialog.index >= 0 && m.emrItemDialog.index < len(m.emrDetail.yarnApps) {
-			app := m.emrDetail.yarnApps[m.emrItemDialog.index]
-			lines = append(lines,
-				"YARN Application Detail",
-				"",
-				"ID: "+app.ID,
-				"Name: "+app.Name,
-				"User: "+app.User,
-				"Started At: "+app.StartedAt,
-				"Elapsed: "+app.Elapsed,
-				"State: "+app.State,
-			)
-		}
+	lines := []string{m.emrItemDialogTitle(), ""}
+	if len(fields) > 0 {
+		lines = append(lines, fields[scroll:end]...)
 	}
+	lines = append(lines, fmt.Sprintf("Details %d-%d/%d", min(scroll+1, len(fields)), end, len(fields)))
 
 	button := lipgloss.NewStyle().
 		Padding(0, 2).
@@ -551,6 +619,112 @@ func (m model) emrItemDialogView() string {
 		Render(strings.Join(lines, "\n"))
 }
 
+func (m model) emrItemDialogTitle() string {
+	if m.emrItemDialog.kind == "yarn" {
+		return "YARN Application Detail"
+	}
+	return "Step Detail"
+}
+
+func (m model) emrItemDialogFields() []string {
+	switch m.emrItemDialog.kind {
+	case "step":
+		if m.emrItemDialog.index < 0 || m.emrItemDialog.index >= len(m.emrDetail.steps) {
+			return nil
+		}
+		step := m.emrDetail.steps[m.emrItemDialog.index]
+		fields := []string{
+			"ID: " + step.ID,
+			"Name: " + step.Name,
+			"Created At: " + step.CreatedAt,
+			"Started At: " + step.StartedAt,
+			"Ended At: " + step.EndedAt,
+			"Elapsed: " + step.Elapsed,
+			"State: " + step.State,
+		}
+		return append(fields, stepLogLinks(step, m.emrDetail.detail)...)
+	case "yarn":
+		if m.emrItemDialog.index < 0 || m.emrItemDialog.index >= len(m.emrDetail.yarnApps) {
+			return nil
+		}
+		app := m.emrDetail.yarnApps[m.emrItemDialog.index]
+		return []string{
+			"ID: " + app.ID,
+			"Name: " + app.Name,
+			"User: " + app.User,
+			"Queue: " + app.Queue,
+			"Application Type: " + app.ApplicationType,
+			"Application Tags: " + app.ApplicationTags,
+			"Priority: " + app.Priority,
+			"State: " + app.State,
+			"Final Status: " + app.FinalStatus,
+			"Progress: " + app.Progress,
+			"Started At: " + app.StartedAt,
+			"Finished At: " + app.FinishedAt,
+			"Elapsed: " + app.Elapsed,
+			"Tracking URL: " + app.TrackingURL,
+			"Diagnostics: " + app.Diagnostics,
+			"AM Container Logs: " + app.AMContainerLogs,
+			"AM Host HTTP Address: " + app.AMHostHTTPAddress,
+			"Allocated Memory: " + app.AllocatedMB + " MB",
+			"Allocated vCores: " + app.AllocatedVCores,
+			"Reserved Memory: " + app.ReservedMB + " MB",
+			"Reserved vCores: " + app.ReservedVCores,
+			"Running Containers: " + app.RunningContainers,
+			"Memory Seconds: " + app.MemorySeconds,
+			"vCore Seconds: " + app.VCoreSeconds,
+			"Queue Usage: " + app.QueueUsagePercentage,
+			"Cluster Usage: " + app.ClusterUsagePercentage,
+			"Preempted Memory: " + app.PreemptedResourceMB + " MB",
+			"Preempted vCores: " + app.PreemptedResourceVCores,
+			"Non-AM Containers Preempted: " + app.NonAMContainersPreempted,
+			"AM Containers Preempted: " + app.AMContainersPreempted,
+			"Log Aggregation Status: " + app.LogAggregationStatus,
+			"Unmanaged Application: " + app.UnmanagedApplication,
+			"App Node Label: " + app.AppNodeLabelExpression,
+			"AM Node Label: " + app.AMNodeLabelExpression,
+		}
+	default:
+		return nil
+	}
+}
+
+func (m model) emrItemDialogVisibleLines() int {
+	return max(m.dialogContentHeight()-9, 1)
+}
+
+func (m model) emrItemDialogMaxScroll() int {
+	boxWidth := min(max(m.width-8, 56), 100)
+	boxWidth = min(boxWidth, max(m.width-2, 20))
+	fields := wrapDetailLines(m.emrItemDialogFields(), max(boxWidth-6, 1))
+	return max(len(fields)-m.emrItemDialogVisibleLines(), 0)
+}
+
+func wrapDetailLines(values []string, width int) []string {
+	lines := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			lines = append(lines, "")
+			continue
+		}
+
+		var line strings.Builder
+		lineWidth := 0
+		for _, r := range value {
+			runeWidth := lipgloss.Width(string(r))
+			if lineWidth > 0 && lineWidth+runeWidth > width {
+				lines = append(lines, line.String())
+				line.Reset()
+				lineWidth = 0
+			}
+			line.WriteRune(r)
+			lineWidth += runeWidth
+		}
+		lines = append(lines, line.String())
+	}
+	return lines
+}
+
 func (m model) updateEMRItemDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	dialog := m.emrItemDialogView()
 	dialogWidth := lipgloss.Width(dialog)
@@ -563,6 +737,29 @@ func (m model) updateEMRItemDialogMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+func stepLogLinks(step appemr.Step, detail appemr.ClusterDetail) []string {
+	logURI := step.LogURI
+	if logURI == "" || logURI == "-" {
+		logURI = detail.LogURI
+	}
+	if logURI == "" || logURI == "-" || detail.ID == "" || step.ID == "" {
+		return nil
+	}
+
+	baseURI := strings.TrimRight(logURI, "/")
+	stepPath := "/steps/" + step.ID
+	if !strings.Contains(baseURI, stepPath) {
+		baseURI += "/" + detail.ID + stepPath
+	}
+
+	return []string{
+		"controller: " + baseURI + "/controller.gz",
+		"syslog: " + baseURI + "/syslog.gz",
+		"stderr: " + baseURI + "/stderr.gz",
+		"stdout: " + baseURI + "/stdout.gz",
+	}
 }
 
 func formatInstanceRow(kind, instanceType, count string) string {

@@ -232,9 +232,7 @@ func (m *model) deleteRemoteRecord(id int) {
 }
 
 func (m model) renderRemoteDeleteDialog(base string) string {
-	_ = base
-
-	return m.renderDialogPage(m.remoteDeleteDialogView())
+	return m.overlayDialog(base, m.remoteDeleteDialogView())
 }
 
 func (m model) remoteDeleteDialogView() string {
@@ -336,9 +334,7 @@ func (m model) confirmRemoteShare() (tea.Model, tea.Cmd) {
 }
 
 func (m model) renderRemoteDialog(base string) string {
-	_ = base
-
-	return m.renderDialogPage(m.remoteDialogView())
+	return m.overlayDialog(base, m.remoteDialogView())
 }
 
 func (m model) remoteDialogView() string {
