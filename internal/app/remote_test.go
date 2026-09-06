@@ -101,9 +101,9 @@ func TestStepColumnWidthPriorities(t *testing.T) {
 	if nameWidth <= 8 {
 		t.Fatalf("Name width = %d, want more than minimum width", nameWidth)
 	}
-	if createdWidth != 19 || startedWidth != 19 || endedWidth != 19 || elapsedWidth != 16 || stateWidth != 18 {
+	if createdWidth != 19 || startedWidth != 19 || endedWidth != 19 || elapsedWidth != 26 || stateWidth != 18 {
 		t.Fatalf(
-			"non-Name widths = %v, want [19 19 19 16 18]",
+			"non-Name widths = %v, want [19 19 19 26 18]",
 			[]int{createdWidth, startedWidth, endedWidth, elapsedWidth, stateWidth},
 		)
 	}

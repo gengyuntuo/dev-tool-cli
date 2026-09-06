@@ -40,12 +40,12 @@ func (m model) renderEMRDisplay(height int) string {
 		fmt.Sprintf("Running EMR Clusters  Page %d/%d  Total %d", m.emrPage+1, totalPages, len(m.emrClusters)),
 		"",
 		boxTop(tableWidth),
-		boxRow(formatClusterRow(tableWidth, "ID", "Name", "State", "Created At"), tableWidth),
+		boxRow(formatClusterRow(tableWidth, "ID", "Name", "Created At", "Elapsed", "State"), tableWidth),
 		boxSeparator(tableWidth),
 	}
 
 	for i, cluster := range m.emrClusters[start:end] {
-		row := boxRow(formatClusterRow(tableWidth, cluster.ID, cluster.Name, renderEMRState(cluster.State), cluster.CreatedAt), tableWidth)
+		row := boxRow(formatClusterRow(tableWidth, cluster.ID, cluster.Name, cluster.CreatedAt, cluster.Elapsed, renderEMRState(cluster.State)), tableWidth)
 		if start+i == m.emrSelected {
 			row = selectedRowStyle(row, tableWidth)
 		}
@@ -73,12 +73,13 @@ func (m model) emrMaxPage() int {
 	return (len(m.emrClusters) - 1) / m.emrPageSize()
 }
 
-func formatClusterRow(tableWidth int, id, name, state, createdAt string) string {
-	idWidth, nameWidth, stateWidth, createdAtWidth := emrClusterColumnWidths(tableWidth)
+func formatClusterRow(tableWidth int, id, name, createdAt, elapsed, state string) string {
+	idWidth, nameWidth, createdAtWidth, elapsedWidth, stateWidth := emrClusterColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
 		formatCell(createdAt, createdAtWidth),
+		formatCellRight(elapsed, elapsedWidth),
 		formatCell(state, stateWidth),
 	}, "  ")
 }
@@ -141,21 +142,35 @@ func formatCellRight(value string, width int) string {
 	return strings.Repeat(" ", padding) + value
 }
 
-func emrClusterColumnWidths(tableWidth int) (int, int, int, int) {
+func emrClusterColumnWidths(tableWidth int) (int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
-	gapWidth := 6
-	idWidth := 22
-	stateWidth := 16
-	createdAtWidth := 19
-	nameWidth := max(innerWidth-gapWidth-idWidth-stateWidth-createdAtWidth, 10)
+	gapWidth := 8
+	availableWidth := max(innerWidth-gapWidth, 5)
+	widths := []int{8, 4, 6, 6, 6}
+	remaining := availableWidth
+	for _, width := range widths {
+		remaining -= width
+	}
+	grow := func(index, target int) {
+		increase := min(max(target-widths[index], 0), max(remaining, 0))
+		widths[index] += increase
+		remaining -= increase
+	}
+	grow(0, 22)
+	grow(4, 16)
+	grow(2, 19)
+	grow(3, 26)
+	if remaining > 0 {
+		widths[1] += remaining
+	}
 
-	return idWidth, nameWidth, stateWidth, createdAtWidth
+	return widths[0], widths[1], widths[2], widths[3], widths[4]
 }
 
 func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	availableWidth := max(innerWidth-12, 7)
-	widths := []int{24, 8, 19, 19, 19, 16, 18}
+	widths := []int{24, 8, 19, 19, 19, 26, 18}
 	totalWidth := 0
 	for _, width := range widths {
 		totalWidth += width
@@ -169,7 +184,7 @@ func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 		widths[index] -= reduction
 		totalWidth -= reduction
 	}
-	shrink(5, 10)
+	shrink(5, 12)
 	shrink(6, 12)
 	shrink(4, 12)
 	shrink(3, 12)
@@ -214,7 +229,7 @@ func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	grow(1, 36)
 	grow(2, 12)
 	grow(3, 19)
-	grow(4, 16)
+	grow(4, 26)
 	grow(5, 12)
 	if remaining > 0 {
 		widths[1] += remaining

@@ -21,6 +21,7 @@ type Cluster struct {
 	State                 string
 	PrimaryNodePrivateDNS string
 	CreatedAt             string
+	Elapsed               string
 }
 
 type ClusterDetail struct {
@@ -32,7 +33,6 @@ type ClusterDetail struct {
 	StateChangeReason string
 	ReadyAt           string
 	EndedAt           string
-	Elapsed           string
 	Applications      []string
 	Instances         []InstanceSummary
 }
@@ -138,6 +138,7 @@ func ListRunningClusters(ctx context.Context, region string) ([]Cluster, error) 
 				Name:      stringValue(cluster.Name),
 				State:     clusterState(cluster.Status),
 				CreatedAt: clusterCreatedAt(cluster.Status),
+				Elapsed:   clusterElapsed(cluster.Status),
 			})
 		}
 	}
@@ -170,6 +171,7 @@ func GetClusterDetail(ctx context.Context, region string, clusterID string) (Clu
 			State:                 clusterState(cluster.Status),
 			PrimaryNodePrivateDNS: primaryNodePrivateDNS,
 			CreatedAt:             clusterCreatedAt(cluster.Status),
+			Elapsed:               clusterElapsed(cluster.Status),
 		},
 		ReleaseLabel:      stringValue(cluster.ReleaseLabel),
 		LogURI:            stringValue(cluster.LogUri),
@@ -178,7 +180,6 @@ func GetClusterDetail(ctx context.Context, region string, clusterID string) (Clu
 		StateChangeReason: clusterStateChangeReason(cluster.Status),
 		ReadyAt:           clusterTimelineTime(cluster.Status, "ready"),
 		EndedAt:           clusterTimelineTime(cluster.Status, "ended"),
-		Elapsed:           clusterElapsed(cluster.Status),
 		Applications:      applications(cluster.Applications),
 	}
 
@@ -454,27 +455,16 @@ func valueOrDash(value string) string {
 }
 
 func formatYarnDuration(ms int64) string {
-	if ms <= 0 {
-		return "0秒"
-	}
-	totalSeconds := ms / 1000
-	hours := totalSeconds / 3600
-	minutes := (totalSeconds % 3600) / 60
-	seconds := totalSeconds % 60
-	parts := make([]string, 0, 3)
-	if hours > 0 {
-		parts = append(parts, fmt.Sprintf("%d时", hours))
-	}
-	if minutes > 0 || len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d分", minutes))
-	}
-	parts = append(parts, fmt.Sprintf("%d秒", seconds))
-	return strings.Join(parts, "")
+	return formatElapsedDuration(ms)
 }
 
 func formatClusterDuration(ms int64) string {
+	return formatElapsedDuration(ms)
+}
+
+func formatElapsedDuration(ms int64) string {
 	if ms <= 0 {
-		return "0秒"
+		return "00秒"
 	}
 
 	totalSeconds := ms / 1000
@@ -489,24 +479,22 @@ func formatClusterDuration(ms int64) string {
 	minutes := totalSeconds / 60
 	seconds := totalSeconds % 60
 
-	parts := make([]string, 0, 6)
 	if years > 0 {
-		parts = append(parts, fmt.Sprintf("%d年", years))
+		return fmt.Sprintf("%d年%02d月%02d天%02d时%02d分%02d秒", years, months, days, hours, minutes, seconds)
 	}
-	if months > 0 || len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d月", months))
+	if months > 0 {
+		return fmt.Sprintf("%02d月%02d天%02d时%02d分%02d秒", months, days, hours, minutes, seconds)
 	}
-	if days > 0 || len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d天", days))
+	if days > 0 {
+		return fmt.Sprintf("%02d天%02d时%02d分%02d秒", days, hours, minutes, seconds)
 	}
-	if hours > 0 || len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d时", hours))
+	if hours > 0 {
+		return fmt.Sprintf("%02d时%02d分%02d秒", hours, minutes, seconds)
 	}
-	if minutes > 0 || len(parts) > 0 {
-		parts = append(parts, fmt.Sprintf("%d分", minutes))
+	if minutes > 0 {
+		return fmt.Sprintf("%02d分%02d秒", minutes, seconds)
 	}
-	parts = append(parts, fmt.Sprintf("%d秒", seconds))
-	return strings.Join(parts, "")
+	return fmt.Sprintf("%02d秒", seconds)
 }
 
 func listInstanceSummaries(ctx context.Context, client *awsemr.Client, clusterID string) ([]InstanceSummary, error) {
