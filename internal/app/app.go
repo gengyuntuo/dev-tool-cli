@@ -321,6 +321,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.activeMenu = index
 					m.status = fmt.Sprintf("Switched to %s", menus[m.activeMenu])
 				}
+				return m, nil
+			}
+
+			if m.activeMenu == emrMenuIndex {
+				if index, ok := m.emrRowIndexAtMouse(msg.Y); ok {
+					m.emrSelected = index
+					cluster := m.emrClusters[index]
+					m.emrDetail = emrDetailState{visible: true, loading: true}
+					m.status = "Loading EMR cluster detail..."
+					return m, loadEMRClusterDetail(cluster.ID)
+				}
 			}
 		}
 	case tea.WindowSizeMsg:
@@ -523,7 +534,7 @@ func (m model) renderStatusBar() string {
 		text = " s 分享  c 连接  ↑/↓ 选择  p 前一页  n 下一页  d 删除  q 退出"
 	}
 	if m.remoteDeleteDialog.visible {
-		text = " Enter 确认删除  Esc 取消  q 退出"
+		text = " 确认<Enter>  取消<Esc>  q 退出"
 	}
 	if m.emrDetail.visible {
 		text = " Tab 切换  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
@@ -547,6 +558,20 @@ func menuIndexAt(x int) (int, bool) {
 	}
 
 	return 0, false
+}
+
+func (m model) emrRowIndexAtMouse(y int) (int, bool) {
+	if y < 6 {
+		return 0, false
+	}
+
+	pageSize := m.emrPageSize()
+	index := m.emrPage*pageSize + (y - 6)
+	if index < 0 || index >= len(m.emrClusters) || y >= 6+pageSize {
+		return 0, false
+	}
+
+	return index, true
 }
 
 func selectedRowStyle(row string, width int) string {

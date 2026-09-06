@@ -167,15 +167,15 @@ func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int, int
 func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	gapWidth := 12
-	idWidth := 22
-	stateWidth := 16
-	userWidth := 14
-	startedAtWidth := 19
-	elapsedWidth := 18
+	idWidth := 18
+	stateWidth := 12
+	userWidth := 12
+	startedAtWidth := 17
+	elapsedWidth := 16
 	nameWidth := innerWidth - gapWidth - idWidth - stateWidth - userWidth - startedAtWidth - elapsedWidth
-	if nameWidth < 12 {
-		nameWidth = 12
-		idWidth = max(innerWidth-gapWidth-nameWidth-stateWidth-userWidth-startedAtWidth-elapsedWidth, 8)
+	if nameWidth < 18 {
+		nameWidth = 18
+		idWidth = max(innerWidth-gapWidth-nameWidth-stateWidth-userWidth-startedAtWidth-elapsedWidth, 12)
 	}
 
 	return idWidth, nameWidth, stateWidth, userWidth, startedAtWidth, elapsedWidth
@@ -460,11 +460,28 @@ func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed str
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
-		formatCell(state, stateWidth),
+		formatCell(renderYarnState(state), stateWidth),
 		formatCell(user, userWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCell(elapsed, elapsedWidth),
 	}, "  ")
+}
+
+func renderYarnState(state string) string {
+	switch state {
+	case "RUNNING":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("46")).Render("● RUNNING")
+	case "FINISHED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("● FINISHED")
+	case "FAILED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Render("● FAILED")
+	case "KILLED":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("● KILLED")
+	case "ACCEPTED", "NEW":
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("● " + state)
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("252")).Render("● " + state)
+	}
 }
 
 func tableWidth(screenWidth int) int {

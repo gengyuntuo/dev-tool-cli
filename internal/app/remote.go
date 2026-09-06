@@ -229,6 +229,7 @@ func (m model) renderRemoteDeleteDialog(base string) string {
 		message = fmt.Sprintf("Delete %s tunnel %s:%s?", record.Action, record.Host, record.Port)
 	}
 
+	hint := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Render("确认<Enter>   取消<Esc>")
 	buttons := m.deleteDialogButton("取消") + "    " + m.deleteDialogButton("确认")
 	content := lipgloss.NewStyle().
 		Width(boxWidth-4).
@@ -239,6 +240,8 @@ func (m model) renderRemoteDeleteDialog(base string) string {
 			"Confirm Delete",
 			"",
 			message,
+			"",
+			hint,
 			"",
 			buttons,
 		}, "\n"))
