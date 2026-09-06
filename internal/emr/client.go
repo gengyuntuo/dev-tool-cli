@@ -2,6 +2,7 @@ package emr
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -253,13 +254,19 @@ func ListYarnApplications(ctx context.Context, host string) ([]YarnApplication, 
 		return nil, nil
 	}
 
-	url := fmt.Sprintf("http://%s:8088/ws/v1/cluster/apps?states=RUNNING,FINISHED,FAILED,KILLED,ACCEPTED,NEW", host)
+	url := fmt.Sprintf("https://%s:8088/ws/v1/cluster/apps?states=RUNNING,FINISHED,FAILED,KILLED,ACCEPTED,NEW", host)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("new yarn request: %w", err)
 	}
 
-	resp, err := (&http.Client{Timeout: 30 * time.Second}).Do(req)
+	client := &http.Client{
+		Timeout: 30 * time.Second,
+		Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+		},
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("call yarn api: %w", err)
 	}
@@ -312,7 +319,31 @@ func ListYarnApplications(ctx context.Context, host string) ([]YarnApplication, 
 			Elapsed:   elapsed,
 		})
 	}
+
+	for i := 0; i < len(apps); i++ {
+		for j := i + 1; j < len(apps); j++ {
+			if yarnAppIDCompare(apps[j].ID, apps[i].ID) > 0 {
+				apps[i], apps[j] = apps[j], apps[i]
+			}
+		}
+	}
 	return apps, nil
+}
+
+func yarnAppIDCompare(a, b string) int {
+	if a == "-" && b != "-" {
+		return -1
+	}
+	if a != "-" && b == "-" {
+		return 1
+	}
+	if a == b {
+		return 0
+	}
+	if a > b {
+		return 1
+	}
+	return -1
 }
 
 func formatYarnDuration(ms int64) string {

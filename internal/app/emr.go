@@ -145,40 +145,39 @@ func emrClusterColumnWidths(tableWidth int) (int, int, int, int) {
 	return idWidth, nameWidth, stateWidth, createdAtWidth
 }
 
-func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int, int) {
+func emrStepColumnWidths(tableWidth int) (int, int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
-	gapWidth := 14
+	gapWidth := 12
 	idWidth := 18
-	stateWidth := 18
 	createdAtWidth := 19
 	startedAtWidth := 19
 	endedAtWidth := 19
-	yarnAppIDWidth := 20
 	elapsedWidth := 18
-	nameWidth := innerWidth - gapWidth - idWidth - stateWidth - createdAtWidth - startedAtWidth - endedAtWidth - yarnAppIDWidth - elapsedWidth
+	stateWidth := 18
+	nameWidth := innerWidth - gapWidth - idWidth - createdAtWidth - startedAtWidth - endedAtWidth - elapsedWidth - stateWidth
 	if nameWidth < 12 {
 		nameWidth = 12
-		idWidth = max(innerWidth-gapWidth-nameWidth-stateWidth-createdAtWidth-startedAtWidth-endedAtWidth-yarnAppIDWidth-elapsedWidth, 8)
+		idWidth = max(innerWidth-gapWidth-nameWidth-createdAtWidth-startedAtWidth-endedAtWidth-elapsedWidth-stateWidth, 8)
 	}
 
-	return idWidth, nameWidth, stateWidth, createdAtWidth, startedAtWidth, endedAtWidth, yarnAppIDWidth, elapsedWidth
+	return idWidth, nameWidth, createdAtWidth, startedAtWidth, endedAtWidth, elapsedWidth, stateWidth
 }
 
 func emrYarnColumnWidths(tableWidth int) (int, int, int, int, int, int) {
 	innerWidth := max(tableWidth-2, 0)
 	gapWidth := 12
 	idWidth := 18
-	stateWidth := 12
 	userWidth := 12
 	startedAtWidth := 17
 	elapsedWidth := 16
-	nameWidth := innerWidth - gapWidth - idWidth - stateWidth - userWidth - startedAtWidth - elapsedWidth
+	stateWidth := 12
+	nameWidth := innerWidth - gapWidth - idWidth - userWidth - startedAtWidth - elapsedWidth - stateWidth
 	if nameWidth < 18 {
 		nameWidth = 18
-		idWidth = max(innerWidth-gapWidth-nameWidth-stateWidth-userWidth-startedAtWidth-elapsedWidth, 12)
+		idWidth = max(innerWidth-gapWidth-nameWidth-userWidth-startedAtWidth-elapsedWidth-stateWidth, 12)
 	}
 
-	return idWidth, nameWidth, stateWidth, userWidth, startedAtWidth, elapsedWidth
+	return idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth
 }
 
 func loadEMRClusters() tea.Cmd {
@@ -239,41 +238,85 @@ func (m model) renderEMRDetailPage(height int) string {
 
 func (m model) renderEMRDetailContent(tableWidth int) string {
 	detail := m.emrDetail.detail
-	if m.emrDetail.activeTab == "yarn" {
-		return m.renderYarnDetailContent(tableWidth, detail)
+	tabs := m.renderEMRDetailTabs(tableWidth)
+
+	switch m.emrDetail.activeTab {
+	case "overview":
+		return strings.Join([]string{
+			tabs,
+			"",
+			m.renderEMROverviewPanel(tableWidth, detail),
+		}, "\n")
+	case "yarn":
+		return strings.Join([]string{
+			tabs,
+			"",
+			m.renderYarnDetailContent(tableWidth, detail),
+		}, "\n")
+	case "instances":
+		return strings.Join([]string{
+			tabs,
+			"",
+			m.renderEMRInstancesPanel(tableWidth, detail),
+		}, "\n")
+	default:
+		return strings.Join([]string{
+			tabs,
+			"",
+			m.renderEMRStepsPanel(tableWidth),
+		}, "\n")
+	}
+}
+
+func (m model) renderEMRDetailTabs(tableWidth int) string {
+	sections := []struct {
+		key   string
+		label string
+	}{
+		{key: "overview", label: "Overview"},
+		{key: "steps", label: "Steps"},
+		{key: "yarn", label: "YARN"},
+		{key: "instances", label: "Instances"},
 	}
 
-	stepStart := m.emrDetail.stepPage * emrDetailStepPageSize
-	stepEnd := min(stepStart+emrDetailStepPageSize, len(m.emrDetail.steps))
-	totalStepPages := m.emrDetailMaxStepPage() + 1
-	if m.emrDetail.stepMarker != "" {
-		totalStepPagesLabel := fmt.Sprintf("%d+", totalStepPages)
-		return m.renderEMRDetailContentWithStepPageLabel(tableWidth, stepStart, stepEnd, totalStepPagesLabel)
+	items := make([]string, 0, len(sections))
+	for _, section := range sections {
+		style := lipgloss.NewStyle().Padding(0, 1).Border(lipgloss.NormalBorder()).BorderForeground(lipgloss.Color("244"))
+		if m.emrDetail.activeTab == section.key {
+			style = style.Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62")).Bold(true)
+		}
+		items = append(items, style.Render(section.label))
 	}
 
+	return lipgloss.NewStyle().Width(tableWidth).Render(strings.Join(items, " "))
+}
+
+func (m model) renderEMROverviewPanel(tableWidth int, detail appemr.ClusterDetail) string {
 	lines := []string{
-		"EMR Cluster Detail",
-		"",
-		"基本信息",
+		"Cluster Overview",
 		boxTop(tableWidth),
 		boxRow("ID: "+detail.ID, tableWidth),
 		boxRow("Name: "+detail.Name, tableWidth),
 		boxRow("State: "+detail.State, tableWidth),
 		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
 		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
-		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
 		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
 		boxRow("Created At: "+detail.CreatedAt, tableWidth),
 		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
 		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
+		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
 		boxBottom(tableWidth),
-		"",
-		"实例种类和数量",
+	}
+	return strings.Join(lines, "\n")
+}
+
+func (m model) renderEMRInstancesPanel(tableWidth int, detail appemr.ClusterDetail) string {
+	lines := []string{
+		"Instances",
 		boxTop(tableWidth),
 		boxRow(formatInstanceRow("Kind", "Type", "Count"), tableWidth),
 		boxSeparator(tableWidth),
 	}
-
 	if len(detail.Instances) == 0 {
 		lines = append(lines, boxRow("No instances found.", tableWidth))
 	} else {
@@ -281,16 +324,50 @@ func (m model) renderEMRDetailContent(tableWidth int) string {
 			lines = append(lines, boxRow(formatInstanceRow(instance.Kind, instance.Type, instance.Count), tableWidth))
 		}
 	}
+	lines = append(lines, boxBottom(tableWidth))
+	return strings.Join(lines, "\n")
+}
 
-	lines = append(lines,
-		boxBottom(tableWidth),
-		"",
-		fmt.Sprintf("Step  Page %d/%d  Loaded %d", m.emrDetail.stepPage+1, totalStepPages, len(m.emrDetail.steps)),
+func (m model) renderEMRStepsPanel(tableWidth int) string {
+	detail := m.emrDetail.detail
+	stepStart := m.emrDetail.stepPage * emrDetailStepPageSize
+	stepEnd := min(stepStart+emrDetailStepPageSize, len(m.emrDetail.steps))
+	totalStepPages := m.emrDetailMaxStepPage() + 1
+	if m.emrDetail.stepMarker != "" {
+		totalStepPagesLabel := fmt.Sprintf("%d+", totalStepPages)
+		lines := []string{
+			"Steps",
+			fmt.Sprintf("Page %d/%s  Loaded %d", m.emrDetail.stepPage+1, totalStepPagesLabel, len(m.emrDetail.steps)),
+			boxTop(tableWidth),
+			boxRow(formatStepRow(tableWidth, "ID", "Name", "", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
+			boxSeparator(tableWidth),
+		}
+		if m.emrDetail.stepLoading {
+			lines = append(lines, boxRow("Loading more steps...", tableWidth))
+		} else if m.emrDetail.stepErr != "" {
+			lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
+		} else if len(m.emrDetail.steps) == 0 {
+			lines = append(lines, boxRow("No steps found.", tableWidth))
+		} else {
+			for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
+				row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, "", step.CreatedAt, step.StartedAt, step.EndedAt, "-", renderStepState(step.State, m.statusBlink)), tableWidth)
+				if stepStart+i == m.emrDetail.stepSelected {
+					row = selectedRowStyle(row, tableWidth)
+				}
+				lines = append(lines, row)
+			}
+		}
+		lines = append(lines, boxBottom(tableWidth))
+		return strings.Join(lines, "\n")
+	}
+
+	lines := []string{
+		"Steps",
+		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.stepPage+1, totalStepPages, len(m.emrDetail.steps)),
 		boxTop(tableWidth),
-		boxRow(formatStepRow(tableWidth, "ID", "Name", "State", "Created At", "Started At", "Ended At", "YARN App ID", "Elapsed"), tableWidth),
+		boxRow(formatStepRow(tableWidth, "ID", "Name", "", "Created At", "Started At", "Ended At", "Elapsed", "State"), tableWidth),
 		boxSeparator(tableWidth),
-	)
-
+	}
 	if m.emrDetail.stepLoading {
 		lines = append(lines, boxRow("Loading steps...", tableWidth))
 	} else if m.emrDetail.stepErr != "" {
@@ -299,78 +376,15 @@ func (m model) renderEMRDetailContent(tableWidth int) string {
 		lines = append(lines, boxRow("No steps found.", tableWidth))
 	} else {
 		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
-			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, renderStepState(step.State, m.statusBlink), step.CreatedAt, step.StartedAt, step.EndedAt, "-", "-"), tableWidth)
+			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, "", step.CreatedAt, step.StartedAt, step.EndedAt, "-", renderStepState(step.State, m.statusBlink)), tableWidth)
 			if stepStart+i == m.emrDetail.stepSelected {
 				row = selectedRowStyle(row, tableWidth)
 			}
 			lines = append(lines, row)
 		}
 	}
-
 	lines = append(lines, boxBottom(tableWidth))
-	return strings.Join(lines, "\n")
-}
-
-func (m model) renderEMRDetailContentWithStepPageLabel(tableWidth, stepStart, stepEnd int, totalStepPagesLabel string) string {
-	detail := m.emrDetail.detail
-
-	lines := []string{
-		"EMR Cluster Detail",
-		"",
-		"基本信息",
-		boxTop(tableWidth),
-		boxRow("ID: "+detail.ID, tableWidth),
-		boxRow("Name: "+detail.Name, tableWidth),
-		boxRow("State: "+detail.State, tableWidth),
-		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
-		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
-		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
-		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
-		boxRow("Created At: "+detail.CreatedAt, tableWidth),
-		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
-		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
-		boxBottom(tableWidth),
-		"",
-		"实例种类和数量",
-		boxTop(tableWidth),
-		boxRow(formatInstanceRow("Kind", "Type", "Count"), tableWidth),
-		boxSeparator(tableWidth),
-	}
-
-	if len(detail.Instances) == 0 {
-		lines = append(lines, boxRow("No instances found.", tableWidth))
-	} else {
-		for _, instance := range detail.Instances {
-			lines = append(lines, boxRow(formatInstanceRow(instance.Kind, instance.Type, instance.Count), tableWidth))
-		}
-	}
-
-	lines = append(lines,
-		boxBottom(tableWidth),
-		"",
-		fmt.Sprintf("Step  Page %d/%s  Loaded %d", m.emrDetail.stepPage+1, totalStepPagesLabel, len(m.emrDetail.steps)),
-		boxTop(tableWidth),
-		boxRow(formatStepRow(tableWidth, "ID", "Name", "State", "Created At", "Started At", "Ended At", "YARN App ID", "Elapsed"), tableWidth),
-		boxSeparator(tableWidth),
-	)
-
-	if m.emrDetail.stepLoading {
-		lines = append(lines, boxRow("Loading more steps...", tableWidth))
-	} else if m.emrDetail.stepErr != "" {
-		lines = append(lines, boxRow("Step load failed: "+m.emrDetail.stepErr, tableWidth))
-	} else if len(m.emrDetail.steps) == 0 {
-		lines = append(lines, boxRow("No steps found.", tableWidth))
-	} else {
-		for i, step := range m.emrDetail.steps[stepStart:stepEnd] {
-			row := boxRow(formatStepRow(tableWidth, step.ID, step.Name, renderStepState(step.State, m.statusBlink), step.CreatedAt, step.StartedAt, step.EndedAt, "-", "-"), tableWidth)
-			if stepStart+i == m.emrDetail.stepSelected {
-				row = selectedRowStyle(row, tableWidth)
-			}
-			lines = append(lines, row)
-		}
-	}
-
-	lines = append(lines, boxBottom(tableWidth))
+	_ = detail
 	return strings.Join(lines, "\n")
 }
 
@@ -378,42 +392,12 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 	appStart := m.emrDetail.yarnPage * emrDetailStepPageSize
 	appEnd := min(appStart+emrDetailStepPageSize, len(m.emrDetail.yarnApps))
 	lines := []string{
-		"EMR Cluster Detail",
-		"",
-		"基本信息",
-		boxTop(tableWidth),
-		boxRow("ID: "+detail.ID, tableWidth),
-		boxRow("Name: "+detail.Name, tableWidth),
-		boxRow("State: "+detail.State, tableWidth),
-		boxRow("Release: "+detail.ReleaseLabel, tableWidth),
-		boxRow("S3 Log URI: "+detail.LogURI, tableWidth),
-		boxRow("Applications: "+strings.Join(detail.Applications, ", "), tableWidth),
-		boxRow("Primary node private DNS: "+detail.PrimaryNodePrivateDNS, tableWidth),
-		boxRow("Created At: "+detail.CreatedAt, tableWidth),
-		boxRow("Step Concurrency: "+detail.StepConcurrency, tableWidth),
-		boxRow("Service Role: "+detail.ServiceRole, tableWidth),
-		boxBottom(tableWidth),
-		"",
-		"实例种类和数量",
-		boxTop(tableWidth),
-		boxRow(formatInstanceRow("Kind", "Type", "Count"), tableWidth),
-		boxSeparator(tableWidth),
-	}
-	if len(detail.Instances) == 0 {
-		lines = append(lines, boxRow("No instances found.", tableWidth))
-	} else {
-		for _, instance := range detail.Instances {
-			lines = append(lines, boxRow(formatInstanceRow(instance.Kind, instance.Type, instance.Count), tableWidth))
-		}
-	}
-	lines = append(lines,
-		boxBottom(tableWidth),
-		"",
-		fmt.Sprintf("YARN Applications  Page %d/%d  Loaded %d", m.emrDetail.yarnPage+1, m.emrDetailYarnMaxPage()+1, len(m.emrDetail.yarnApps)),
+		"YARN Applications",
+		fmt.Sprintf("Page %d/%d  Loaded %d", m.emrDetail.yarnPage+1, m.emrDetailYarnMaxPage()+1, len(m.emrDetail.yarnApps)),
 		boxTop(tableWidth),
 		boxRow(formatYarnRow(tableWidth, "ID", "Name", "State", "User", "Started At", "Elapsed"), tableWidth),
 		boxSeparator(tableWidth),
-	)
+	}
 	if m.emrDetail.yarnLoading {
 		lines = append(lines, boxRow("Loading YARN applications...", tableWidth))
 	} else if m.emrDetail.yarnErr != "" {
@@ -430,6 +414,7 @@ func (m model) renderYarnDetailContent(tableWidth int, detail appemr.ClusterDeta
 		}
 	}
 	lines = append(lines, boxBottom(tableWidth))
+	_ = detail
 	return strings.Join(lines, "\n")
 }
 
@@ -442,28 +427,27 @@ func formatInstanceRow(kind, instanceType, count string) string {
 }
 
 func formatStepRow(tableWidth int, id, name, state, createdAt, startedAt, endedAt, yarnAppID, elapsed string) string {
-	idWidth, nameWidth, stateWidth, createdAtWidth, startedAtWidth, endedAtWidth, yarnAppIDWidth, elapsedWidth := emrStepColumnWidths(tableWidth)
+	idWidth, nameWidth, createdAtWidth, startedAtWidth, endedAtWidth, elapsedWidth, stateWidth := emrStepColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
-		formatCell(state, stateWidth),
 		formatCell(createdAt, createdAtWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCell(endedAt, endedAtWidth),
-		formatCell(yarnAppID, yarnAppIDWidth),
 		formatCell(elapsed, elapsedWidth),
+		formatCell(state, stateWidth),
 	}, "  ")
 }
 
 func formatYarnRow(tableWidth int, id, name, state, user, startedAt, elapsed string) string {
-	idWidth, nameWidth, stateWidth, userWidth, startedAtWidth, elapsedWidth := emrYarnColumnWidths(tableWidth)
+	idWidth, nameWidth, userWidth, startedAtWidth, elapsedWidth, stateWidth := emrYarnColumnWidths(tableWidth)
 	return strings.Join([]string{
 		formatCell(id, idWidth),
 		formatCell(name, nameWidth),
-		formatCell(renderYarnState(state), stateWidth),
 		formatCell(user, userWidth),
 		formatCell(startedAt, startedAtWidth),
 		formatCell(elapsed, elapsedWidth),
+		formatCell(renderYarnState(state), stateWidth),
 	}, "  ")
 }
 

@@ -161,15 +161,19 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.emrDetail.visible = false
 				return m, nil
 			case "tab":
-				if m.emrDetail.activeTab == "yarn" {
-					m.emrDetail.activeTab = "step"
-				} else {
-					m.emrDetail.activeTab = "yarn"
-					if m.emrDetail.yarnApps == nil && !m.emrDetail.yarnLoading {
-						m.emrDetail.yarnLoading = true
-						m.emrDetail.yarnErr = ""
-						return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
+				sections := []string{"overview", "steps", "yarn", "instances"}
+				current := 0
+				for i, section := range sections {
+					if section == m.emrDetail.activeTab {
+						current = i
+						break
 					}
+				}
+				m.emrDetail.activeTab = sections[(current+1)%len(sections)]
+				if m.emrDetail.activeTab == "yarn" && m.emrDetail.yarnApps == nil && !m.emrDetail.yarnLoading {
+					m.emrDetail.yarnLoading = true
+					m.emrDetail.yarnErr = ""
+					return m, loadYarnApps(m.emrDetail.detail.PrimaryNodePrivateDNS)
 				}
 				return m, nil
 			case "p":
@@ -178,7 +182,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.yarnPage--
 						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
 					}
-				} else if m.emrDetail.stepPage > 0 {
+				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepPage > 0 {
 					m.emrDetail.stepPage--
 					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
 				}
@@ -189,13 +193,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.yarnPage++
 						m.emrDetail.yarnSelected = m.emrDetail.yarnPage * emrDetailStepPageSize
 					}
-				} else if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
-					m.emrDetail.stepPage++
-					m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
-				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
-					m.emrDetail.stepLoading = true
-					m.emrDetail.stepErr = ""
-					return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+				} else if m.emrDetail.activeTab == "steps" {
+					if m.emrDetail.stepPage < m.emrDetailMaxStepPage() {
+						m.emrDetail.stepPage++
+						m.emrDetail.stepSelected = m.emrDetail.stepPage * emrDetailStepPageSize
+					} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
+						m.emrDetail.stepLoading = true
+						m.emrDetail.stepErr = ""
+						return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+					}
 				}
 				return m, nil
 			case "up":
@@ -204,7 +210,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.yarnSelected--
 						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
 					}
-				} else if m.emrDetail.stepSelected > 0 {
+				} else if m.emrDetail.activeTab == "steps" && m.emrDetail.stepSelected > 0 {
 					m.emrDetail.stepSelected--
 					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
 				}
@@ -215,13 +221,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.emrDetail.yarnSelected++
 						m.emrDetail.yarnPage = m.emrDetail.yarnSelected / emrDetailStepPageSize
 					}
-				} else if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
-					m.emrDetail.stepSelected++
-					m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
-				} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
-					m.emrDetail.stepLoading = true
-					m.emrDetail.stepErr = ""
-					return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+				} else if m.emrDetail.activeTab == "steps" {
+					if m.emrDetail.stepSelected < len(m.emrDetail.steps)-1 {
+						m.emrDetail.stepSelected++
+						m.emrDetail.stepPage = m.emrDetail.stepSelected / emrDetailStepPageSize
+					} else if m.emrDetail.stepMarker != "" && !m.emrDetail.stepLoading {
+						m.emrDetail.stepLoading = true
+						m.emrDetail.stepErr = ""
+						return m, loadEMRSteps(m.emrDetail.detail.ID, m.emrDetail.stepMarker)
+					}
 				}
 				return m, nil
 			}
@@ -365,7 +373,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.emrDetail.stepMarker = ""
 		m.emrDetail.stepPage = 0
 		m.emrDetail.stepSelected = 0
-		m.emrDetail.activeTab = "step"
+		m.emrDetail.activeTab = "overview"
 		m.emrDetail.yarnApps = nil
 		m.emrDetail.yarnSelected = 0
 		m.emrDetail.yarnPage = 0
@@ -537,7 +545,7 @@ func (m model) renderStatusBar() string {
 		text = " 确认<Enter>  取消<Esc>  q 退出"
 	}
 	if m.emrDetail.visible {
-		text = " Tab 切换  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
+		text = " Tab 切换 section  ↑/↓ 选择  p 前一页  n 下一页  Esc 返回  q 退出"
 	}
 
 	return lipgloss.NewStyle().
